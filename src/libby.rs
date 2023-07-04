@@ -223,12 +223,7 @@ pub async fn get_library_info_for_card(libby_user: &LibbyUser) -> Result<String>
         .context("Unable to sync card")
 }
 
-pub async fn search_for_book_by_title(
-    libby_user: &LibbyUser,
-    book_type: BookType,
-    title: &str,
-    author: Option<&str>,
-) -> Result<BookInfo> {
+fn url_for_query(libby_user: &LibbyUser, book_type: BookType, title: &str) -> Result<reqwest::Url> {
     let url = reqwest::Url::parse_with_params(
         &format!(
             "https://thunder.api.overdrive.com/v2/libraries/{}/media",
@@ -246,10 +241,28 @@ pub async fn search_for_book_by_title(
         ],
     )?;
     debug!("uri: {:?}", url);
-
-    let response = make_libby_library_get_request::<LibbySearchResult, _>(libby_user, url).await?;
+    Ok(url)
+}
+pub async fn search_for_book_by_title(
+    libby_user: &LibbyUser,
+    book_type: BookType,
+    title: &str,
+    author: Option<&str>,
+) -> Result<BookInfo> {
+    let url = url_for_query(libby_user, book_type.clone(), title)?;
+    let mut response =
+        make_libby_library_get_request::<LibbySearchResult, _>(libby_user, url).await?;
 
     debug!("{:#?}", response);
+    // Library search does not handle subtitles well, if we found nothing, lets
+    // try with any part of title leading to ':'
+    if response.items.is_empty() && title.contains(':') {
+        if let Some(t2) = title.split_once(':').map(|(t2, _)| t2) {
+            let url = url_for_query(libby_user, book_type, t2)?;
+            response =
+                make_libby_library_get_request::<LibbySearchResult, _>(libby_user, url).await?;
+        }
+    }
 
     response
         .items

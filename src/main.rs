@@ -74,16 +74,20 @@ async fn main() -> anyhow::Result<()> {
         let found_book =
             search_for_book_by_title(&user, command_args.book_type.clone(), title, Some(authors))
                 .await;
-        if let Ok(book_info) = found_book {
-            if existing_book_ids.contains(&book_info.libby_id) {
-                println!("Already tagged '{}'", book_info.title);
-            } else {
-                println!("Tagging        '{}'", book_info.title);
-                tag_book_by_overdrive_id(&user, &tag_info, &book_info.libby_id).await?;
-                existing_book_ids.insert(book_info.libby_id);
+
+        match found_book {
+            Ok(book_info) => {
+                if existing_book_ids.contains(&book_info.libby_id) {
+                    println!("Already tagged '{}'", book_info.title);
+                } else {
+                    println!("Tagging        '{}'", book_info.title);
+                    tag_book_by_overdrive_id(&user, &tag_info, &book_info.libby_id).await?;
+                    existing_book_ids.insert(book_info.libby_id);
+                }
             }
-        } else {
-            println!("Could not find '{}'", title);
+            Err(e) => {
+                println!("Could not find '{}' -- {:?}", title, e);
+            }
         }
     }
 

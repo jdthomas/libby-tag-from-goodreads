@@ -6,6 +6,7 @@ use itertools::Itertools;
 use reqwest::IntoUrl;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
 
@@ -202,10 +203,14 @@ pub async fn get_books_for_tag(
         .collect::<Vec<BookInfo>>())
 }
 
-fn fuzzy_compare(a: &str, b: &str) -> bool {
-    println!("{} == {}?", a, b);
+fn fuzzy_author_compare(haystack: &HashSet<String>, needle: &str) -> bool {
+    println!("    {} in {:?}?", needle, haystack);
+    let lower_haystack = haystack
+        .iter()
+        .map(|auth| auth.to_lowercase())
+        .collect::<HashSet<String>>();
     // TOOD: Something fancy
-    a.to_lowercase() == b.to_lowercase()
+    lower_haystack.contains(&needle.to_lowercase())
 }
 
 pub async fn get_library_info_for_card(libby_user: &LibbyUser) -> Result<String> {
@@ -247,7 +252,7 @@ pub async fn search_for_book_by_title(
     libby_user: &LibbyUser,
     book_type: BookType,
     title: &str,
-    author: Option<&str>,
+    authors: Option<&HashSet<String>>,
 ) -> Result<BookInfo> {
     let url = url_for_query(libby_user, book_type.clone(), title)?;
     let mut response =
@@ -267,7 +272,7 @@ pub async fn search_for_book_by_title(
     response
         .items
         .iter()
-        .find(|b| author.is_none() || fuzzy_compare(author.unwrap(), &b.firstCreatorName))
+        .find(|b| authors.is_none() || fuzzy_author_compare(authors.unwrap(), &b.firstCreatorName))
         .map(|b| BookInfo {
             title: b.sortTitle.to_string(),
             libby_id: b.id.to_string(),

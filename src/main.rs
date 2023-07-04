@@ -66,13 +66,13 @@ async fn main() -> anyhow::Result<()> {
     info!("Found {} existing books", existing_book_ids.len());
 
     debug!("books: {:#?}", goodread_books);
-    for goodreads::BookInfo { title, author, .. } in goodread_books.iter() {
+    for goodreads::BookInfo { title, authors, .. } in goodread_books.iter() {
         if existing_book_titles.contains(title) {
             println!("Already tagged '{}'", title);
             continue;
         }
         let found_book =
-            search_for_book_by_title(&user, command_args.book_type.clone(), title, Some(author))
+            search_for_book_by_title(&user, command_args.book_type.clone(), title, Some(authors))
                 .await;
         if let Ok(book_info) = found_book {
             if existing_book_ids.contains(&book_info.libby_id) {

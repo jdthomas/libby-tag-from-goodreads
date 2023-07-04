@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use tracing::debug;
 
@@ -8,13 +9,22 @@ pub struct BookInfo {
     pub title: String,
     pub author: String,
     pub isbn: String,
+    pub authors: HashSet<String>,
 }
 impl From<GoodReadsExportRecord> for BookInfo {
     fn from(other: GoodReadsExportRecord) -> Self {
+        let authors = other
+            .additional_authors
+            .split(',')
+            .map(|a| a.to_string())
+            .chain([other.author.clone()])
+            .filter(|a| !a.is_empty())
+            .collect();
         Self {
             title: other.title,
             author: other.author,
             isbn: other.ISBN,
+            authors,
         }
     }
 }

@@ -10,6 +10,7 @@ anyhow = "1.0.71"
 base64 = "0.21.2"
 clap = { version = "4.3.10", features = ["derive"] }
 csv = "1.2.2"
+edit-distance = "2.1.0"
 itertools = "0.11.0"
 reqwest = { version = "0.11.18", features = ["serde_json", "json"] }
 serde = { version = "1.0.164", features = ["derive"] }

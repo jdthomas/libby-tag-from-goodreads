@@ -209,8 +209,15 @@ fn fuzzy_author_compare(haystack: &HashSet<String>, needle: &str) -> bool {
         .iter()
         .map(|auth| auth.to_lowercase())
         .collect::<HashSet<String>>();
+    let lower_needle = needle.to_lowercase();
+    lower_haystack
+        .iter()
+        .map(|x| edit_distance::edit_distance(x, &lower_needle))
+        .min()
+        .unwrap_or(usize::MAX)
+        < 3
     // TOOD: Something fancy
-    lower_haystack.contains(&needle.to_lowercase())
+    // lower_haystack.contains(&lower_needle)
 }
 
 pub async fn get_library_info_for_card(libby_user: &LibbyUser) -> Result<String> {

@@ -40,6 +40,9 @@ struct CommandArgs {
 
     #[clap(long, default_value = "audiobook")]
     book_type: BookType,
+
+    #[clap(long)]
+    dry_run: bool,
 }
 
 #[tokio::main]
@@ -81,7 +84,9 @@ async fn main() -> anyhow::Result<()> {
                     println!("Already tagged '{}'", book_info.title);
                 } else {
                     println!("Tagging        '{}'", book_info.title);
-                    tag_book_by_overdrive_id(&user, &tag_info, &book_info.libby_id).await?;
+                    if !command_args.dry_run {
+                        tag_book_by_overdrive_id(&user, &tag_info, &book_info.libby_id).await?;
+                    }
                     existing_book_ids.insert(book_info.libby_id);
                 }
             }

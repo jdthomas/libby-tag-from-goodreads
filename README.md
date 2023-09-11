@@ -1,6 +1,6 @@
 # libby-tag-from-goodreads
 
-Simple script to take a shelf from a [Goodreads](https://goodreads.com) export and import it into [Libby](libbyapp.com) as a tag.
+Simple script to take a shelf from a [Goodreads](https://goodreads.com) export and import it into [Libby](https://libbyapp.com) as a tag.
 
 1. [export](https://help.goodreads.com/s/article/How-do-I-import-or-export-my-books-1553870934590) your Goodreads library (their API is apparently deprecated)
 2. Login to Libby and use the browser debug tools network tab to find teh 'Authorization' header and grab the bearer token

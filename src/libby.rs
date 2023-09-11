@@ -12,13 +12,14 @@ use tracing::debug;
 
 #[derive(Clone, Debug, Parser)]
 pub struct LibbyUser {
+    /// Card id as known by libbyapp
     #[clap(long)]
     pub card_id: String,
 
-    #[clap(
-        long,
-        help = "Open libbyapp.com in your browser of choice and after logging in w/ a library card, use the browser's debug tools to find the value of the 'Authorization' header as part of any request"
-    )]
+    /// Open libbyapp.com in your browser of choice and after logging in w/ a
+    /// library card, use the browser's debug tools to find the value of the
+    /// 'Authorization' header as part of any request
+    #[clap(long)]
     pub bearer_token: String,
 
     #[clap(skip)]

@@ -17,4 +17,5 @@ Cargo.lock
 run.sh
 run_log.txt
 *.csv
+perf.data
 

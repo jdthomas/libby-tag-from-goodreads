@@ -10,12 +10,8 @@ pub mod logging;
 
 use goodreads::get_book_titles_from_goodreads_shelf;
 
-use libby::get_books_for_tag;
-use libby::get_existing_tag_by_name;
-use libby::get_library_info_for_card;
-use libby::search_for_book_by_title;
-use libby::tag_book_by_overdrive_id;
 use libby::BookType;
+use libby::LibbyClient;
 use libby::LibbyUser;
 
 use logging::init_logging;
@@ -33,7 +29,7 @@ struct CommandArgs {
     #[clap(short, long = "tag")]
     tag_name: String,
 
-    /// Path to local file with a goodreads exported csv. 
+    /// Path to local file with a goodreads exported csv.
     /// For information on how to export, see this article:
     ///   https://help.goodreads.com/s/article/How-do-I-import-or-export-my-books-1553870934590
     #[clap(long)]
@@ -64,10 +60,11 @@ async fn main() -> anyhow::Result<()> {
     let command_args = CommandArgs::parse();
     init_logging(command_args.log);
 
-    let mut user = command_args.libby_user.clone();
-    user.library_advantage_key = Some(get_library_info_for_card(&user).await?);
+    let libby_client = LibbyClient::new(command_args.libby_user.clone()).await?;
 
-    let tag_info = get_existing_tag_by_name(&user, &command_args.tag_name).await?;
+    let tag_info = libby_client
+        .get_existing_tag_by_name(&command_args.tag_name)
+        .await?;
 
     let goodread_books = get_book_titles_from_goodreads_shelf(
         command_args.goodreads_export_csv,
@@ -75,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    let existing_books = get_books_for_tag(&user, &tag_info).await?;
+    let existing_books = libby_client.get_books_for_tag(&tag_info).await?;
     let existing_book_titles: HashSet<String> =
         existing_books.iter().map(|b| b.title.clone()).collect();
     let mut existing_book_ids: HashSet<String> =
@@ -108,9 +105,9 @@ async fn main() -> anyhow::Result<()> {
             println!("Already tagged '{}'", title);
             continue;
         }
-        let found_book =
-            search_for_book_by_title(&user, command_args.book_type.clone(), title, Some(authors))
-                .await;
+        let found_book = libby_client
+            .search_for_book_by_title(command_args.book_type.clone(), title, Some(authors))
+            .await;
 
         match found_book {
             Ok(book_info) => {
@@ -119,7 +116,9 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     println!("Tagging        '{}'", book_info.title);
                     if !command_args.dry_run {
-                        tag_book_by_overdrive_id(&user, &tag_info, &book_info.libby_id).await?;
+                        libby_client
+                            .tag_book_by_overdrive_id(&tag_info, &book_info.libby_id)
+                            .await?;
                     }
                     existing_book_ids.insert(book_info.libby_id);
                 }

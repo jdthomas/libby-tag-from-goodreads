@@ -154,56 +154,6 @@ struct LibbyTagList {
     tags: Vec<LibbyTag>,
 }
 
-pub async fn tag_book_by_overdrive_id(
-    libby_user: &LibbyUser,
-    tag_info: &TagInfo,
-    title_id: &str,
-) -> Result<()> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards")
-        .as_secs();
-
-    let url = format!(
-        "https://vandal.svc.overdrive.com/tag/{}/{}/tagging/{}?enc=1",
-        tag_info.uuid,
-        encode_name(&tag_info.name),
-        title_id
-    );
-    debug!("~~JT~~: url={:?}", url);
-
-    let data = json!({ "tagging": { "cardId": libby_user.card_id, "createTime": now, "titleId": title_id, "websiteId": "83" } });
-    debug!("~~JT~~: {:#?}", data.to_string());
-    let response = make_logged_in_libby_post_request(libby_user, url, &data).await?;
-    debug!("{:#?}", response);
-    Ok(())
-}
-
-pub async fn get_books_for_tag(
-    libby_user: &LibbyUser,
-    tag_info: &TagInfo,
-) -> Result<Vec<BookInfo>> {
-    let url = format!(
-        "https://vandal.svc.overdrive.com/tag/{}/{}?enc=1&sort=newest",
-        tag_info.uuid,
-        encode_name(&tag_info.name)
-    );
-
-    let response = make_logged_in_libby_get_request::<LibbyTagQuery, _>(libby_user, url).await?;
-
-    debug!("{:#?}", response);
-    // TODO: Drain
-    Ok(response
-        .tag
-        .taggings
-        .iter()
-        .map(|tag| BookInfo {
-            libby_id: tag.titleId.clone(),
-            title: tag.sortTitle.clone(),
-        })
-        .collect::<Vec<BookInfo>>())
-}
-
 fn fuzzy_author_compare(haystack: &HashSet<String>, needle: &str) -> bool {
     println!("    {} in {:?}?", needle, haystack);
     let lower_haystack = haystack
@@ -219,21 +169,6 @@ fn fuzzy_author_compare(haystack: &HashSet<String>, needle: &str) -> bool {
         < 3
     // TOOD: Something fancy
     // lower_haystack.contains(&lower_needle)
-}
-
-pub async fn get_library_info_for_card(libby_user: &LibbyUser) -> Result<String> {
-    let url = "https://sentry-read.svc.overdrive.com/chip/sync";
-
-    let response = make_logged_in_libby_get_request::<LibbyCardSync, _>(libby_user, url).await?;
-
-    debug!("{:#?}", response);
-
-    response
-        .cards
-        .iter()
-        .find(|card| card.cardId == libby_user.card_id)
-        .map(|card| card.advantageKey.clone())
-        .context("Unable to sync card")
 }
 
 fn url_for_query(libby_user: &LibbyUser, book_type: BookType, title: &str) -> Result<reqwest::Url> {
@@ -256,139 +191,209 @@ fn url_for_query(libby_user: &LibbyUser, book_type: BookType, title: &str) -> Re
     debug!("uri: {:?}", url);
     Ok(url)
 }
-pub async fn search_for_book_by_title(
-    libby_user: &LibbyUser,
-    book_type: BookType,
-    title: &str,
-    authors: Option<&HashSet<String>>,
-) -> Result<BookInfo> {
-    let url = url_for_query(libby_user, book_type.clone(), title)?;
-    let mut response =
-        make_libby_library_get_request::<LibbySearchResult, _>(libby_user, url).await?;
 
-    debug!("{:#?}", response);
-    // Library search does not handle subtitles well, if we found nothing, lets
-    // try with any part of title leading to ':'
-    if response.items.is_empty() && title.contains(':') {
-        if let Some(t2) = title.split_once(':').map(|(t2, _)| t2) {
-            let url = url_for_query(libby_user, book_type, t2)?;
-            response =
-                make_libby_library_get_request::<LibbySearchResult, _>(libby_user, url).await?;
-        }
+pub struct LibbyClient {
+    client: reqwest::Client,
+    libby_user: LibbyUser,
+}
+impl LibbyClient {
+    pub async fn new(libby_user: LibbyUser) -> Result<Self> {
+        let mut client = Self {
+            client: reqwest::Client::builder()
+            .user_agent(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/114.0",
+            )
+            .build()?,
+            libby_user,
+        };
+        let library_advantage_key = client.get_library_info_for_card().await?;
+
+        client.libby_user.library_advantage_key = Some(library_advantage_key);
+
+        Ok(client)
     }
 
-    response
-        .items
-        .iter()
-        .find(|b| authors.is_none() || fuzzy_author_compare(authors.unwrap(), &b.firstCreatorName))
-        .map(|b| BookInfo {
-            title: b.sortTitle.to_string(),
-            libby_id: b.id.to_string(),
+    pub async fn tag_book_by_overdrive_id(&self, tag_info: &TagInfo, title_id: &str) -> Result<()> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+
+        let url = format!(
+            "https://vandal.svc.overdrive.com/tag/{}/{}/tagging/{}?enc=1",
+            tag_info.uuid,
+            encode_name(&tag_info.name),
+            title_id
+        );
+        debug!("~~JT~~: url={:?}", url);
+
+        let data = json!({ "tagging": { "cardId": self.libby_user.card_id, "createTime": now, "titleId": title_id, "websiteId": "83" } });
+        debug!("~~JT~~: {:#?}", data.to_string());
+        let response = self.make_logged_in_libby_post_request(url, &data).await?;
+        debug!("{:#?}", response);
+        Ok(())
+    }
+
+    pub async fn get_books_for_tag(&self, tag_info: &TagInfo) -> Result<Vec<BookInfo>> {
+        let url = format!(
+            "https://vandal.svc.overdrive.com/tag/{}/{}?enc=1&sort=newest",
+            tag_info.uuid,
+            encode_name(&tag_info.name)
+        );
+
+        let response = self
+            .make_logged_in_libby_get_request::<LibbyTagQuery, _>(url)
+            .await?;
+
+        debug!("{:#?}", response);
+        // TODO: Drain
+        Ok(response
+            .tag
+            .taggings
+            .iter()
+            .map(|tag| BookInfo {
+                libby_id: tag.titleId.clone(),
+                title: tag.sortTitle.clone(),
+            })
+            .collect::<Vec<BookInfo>>())
+    }
+
+    async fn get_library_info_for_card(&self) -> Result<String> {
+        let url = "https://sentry-read.svc.overdrive.com/chip/sync";
+
+        let response = self
+            .make_logged_in_libby_get_request::<LibbyCardSync, _>(url)
+            .await?;
+
+        debug!("{:#?}", response);
+
+        response
+            .cards
+            .iter()
+            .find(|card| card.cardId == self.libby_user.card_id)
+            .map(|card| card.advantageKey.clone())
+            .context("Unable to sync card")
+    }
+
+    pub async fn search_for_book_by_title(
+        &self,
+        book_type: BookType,
+        title: &str,
+        authors: Option<&HashSet<String>>,
+    ) -> Result<BookInfo> {
+        let url = url_for_query(&self.libby_user, book_type.clone(), title)?;
+        let mut response = self
+            .make_libby_library_get_request::<LibbySearchResult, _>(url)
+            .await?;
+
+        debug!("{:#?}", response);
+        // Library search does not handle subtitles well, if we found nothing, lets
+        // try with any part of title leading to ':'
+        if response.items.is_empty() && title.contains(':') {
+            if let Some(t2) = title.split_once(':').map(|(t2, _)| t2) {
+                let url = url_for_query(&self.libby_user, book_type, t2)?;
+                response = self
+                    .make_libby_library_get_request::<LibbySearchResult, _>(url)
+                    .await?;
+            }
+        }
+
+        response
+            .items
+            .iter()
+            .find(|b| {
+                authors.is_none() || fuzzy_author_compare(authors.unwrap(), &b.firstCreatorName)
+            })
+            .map(|b| BookInfo {
+                title: b.sortTitle.to_string(),
+                libby_id: b.id.to_string(),
+            })
+            .context(format!("Book '{}' not found", title))
+    }
+
+    pub async fn get_existing_tag_by_name(&self, name: &str) -> Result<TagInfo> {
+        let response = self
+            .make_libby_library_get_request::<LibbyTagList, _>(
+                "https://vandal.svc.overdrive.com/tags",
+            )
+            .await?;
+        debug!("{:#?}", response);
+
+        let found = response
+            .tags
+            .iter()
+            .find(|t| t.name == name)
+            .cloned()
+            .context("Unable to find tag by name");
+        debug!("{:#?}", found);
+        found.map(|lt| TagInfo {
+            name: lt.name,
+            uuid: lt.uuid,
         })
-        .context(format!("Book '{}' not found", title))
-}
+    }
 
-pub async fn get_existing_tag_by_name(libby_user: &LibbyUser, name: &str) -> Result<TagInfo> {
-    let response = make_libby_library_get_request::<LibbyTagList, _>(
-        libby_user,
-        "https://vandal.svc.overdrive.com/tags",
-    )
-    .await?;
-    debug!("{:#?}", response);
+    async fn make_logged_in_libby_get_request<T: serde::de::DeserializeOwned, U: IntoUrl>(
+        &self,
+        url: U,
+    ) -> Result<T> {
+        self.client
+            .get(url)
+            .header("Origin", "https://libbyapp.com")
+            .header("Referer", "https://libbyapp.com")
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Site", "cross-site")
+            .bearer_auth(self.libby_user.bearer_token.clone())
+            .body("")
+            .send()
+            .await
+            .context("libby request")?
+            .json::<T>()
+            .await
+            .context("libby request parsing")
+    }
+    async fn make_logged_in_libby_post_request<U: IntoUrl>(
+        &self,
+        url: U,
+        data: &serde_json::Value,
+    ) -> Result<String> {
+        self.client
+            .post(url)
+            .header("Origin", "https://libbyapp.com")
+            .header("Referer", "https://libbyapp.com")
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Site", "cross-site")
+            .bearer_auth(self.libby_user.bearer_token.clone())
+            .json(&data)
+            .send()
+            .await
+            .context("libby post requst")?
+            .text()
+            .await
+            .context("libby post response")
+    }
 
-    let found = response
-        .tags
-        .iter()
-        .find(|t| t.name == name)
-        .cloned()
-        .context("Unable to find tag by name");
-    debug!("{:#?}", found);
-    found.map(|lt| TagInfo {
-        name: lt.name,
-        uuid: lt.uuid,
-    })
-}
-
-async fn make_libby_library_get_request<T: serde::de::DeserializeOwned, U: IntoUrl>(
-    libby_user: &LibbyUser,
-    url: U,
-) -> Result<T> {
-    let client = reqwest::Client::builder()
-        .user_agent(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/114.0",
-        )
-        .build()?;
-
-    client
-        .get(url)
-        .header("Origin", "https://libbyapp.com")
-        .header("Referer", "https://libbyapp.com")
-        .header("Sec-Fetch-Dest", "empty")
-        .header("Sec-Fetch-Mode", "cors")
-        .header("Sec-Fetch-Site", "cross-site")
-        .bearer_auth(libby_user.bearer_token.clone())
-        .body("")
-        .send()
-        .await
-        .context("library request")?
-        .json::<T>()
-        .await
-        .context("library request parsing")
-}
-
-async fn make_logged_in_libby_get_request<T: serde::de::DeserializeOwned, U: IntoUrl>(
-    libby_user: &LibbyUser,
-    url: U,
-) -> Result<T> {
-    let client = reqwest::Client::builder()
-        .user_agent(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/114.0",
-        )
-        .build()?;
-
-    client
-        .get(url)
-        .header("Origin", "https://libbyapp.com")
-        .header("Referer", "https://libbyapp.com")
-        .header("Sec-Fetch-Dest", "empty")
-        .header("Sec-Fetch-Mode", "cors")
-        .header("Sec-Fetch-Site", "cross-site")
-        .bearer_auth(libby_user.bearer_token.clone())
-        .body("")
-        .send()
-        .await
-        .context("libby request")?
-        .json::<T>()
-        .await
-        .context("libby request parsing")
-}
-
-async fn make_logged_in_libby_post_request<U: IntoUrl>(
-    libby_user: &LibbyUser,
-    url: U,
-    data: &serde_json::Value,
-) -> Result<String> {
-    let client = reqwest::Client::builder()
-        .user_agent(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/114.0",
-        )
-        .build()?;
-
-    client
-        .post(url)
-        .header("Origin", "https://libbyapp.com")
-        .header("Referer", "https://libbyapp.com")
-        .header("Sec-Fetch-Dest", "empty")
-        .header("Sec-Fetch-Mode", "cors")
-        .header("Sec-Fetch-Site", "cross-site")
-        .bearer_auth(libby_user.bearer_token.clone())
-        .json(&data)
-        .send()
-        .await
-        .context("libby post requst")?
-        .text()
-        .await
-        .context("libby post response")
+    async fn make_libby_library_get_request<T: serde::de::DeserializeOwned, U: IntoUrl>(
+        &self,
+        url: U,
+    ) -> Result<T> {
+        self.client
+            .get(url)
+            .header("Origin", "https://libbyapp.com")
+            .header("Referer", "https://libbyapp.com")
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Site", "cross-site")
+            .bearer_auth(self.libby_user.bearer_token.clone())
+            .body("")
+            .send()
+            .await
+            .context("library request")?
+            .json::<T>()
+            .await
+            .context("library request parsing")
+    }
 }
 
 #[cfg(test)]

@@ -171,7 +171,25 @@ fn fuzzy_author_compare(haystack: &HashSet<String>, needle: &str) -> bool {
     // lower_haystack.contains(&lower_needle)
 }
 
-fn url_for_query(libby_user: &LibbyUser, book_type: BookType, title: &str) -> Result<reqwest::Url> {
+fn url_for_query(
+    libby_user: &LibbyUser,
+    search_opts: SearchOptions,
+    title: &str,
+) -> Result<reqwest::Url> {
+    let book_type = search_opts.book_type.to_string();
+    let max_results = search_opts.max_results.to_string();
+    let mut url_params = vec![
+        ("query", title),
+        ("mediaTypes", &book_type),
+        ("perPage", &max_results),
+        ("page", "1"),
+        ("x-client-id", "dewey"),
+    ];
+
+    if search_opts.deep_search {
+        // Include books the library doesn't currently have
+        url_params.push(("show", "all"));
+    }
     let url = reqwest::Url::parse_with_params(
         &format!(
             "https://thunder.api.overdrive.com/v2/libraries/{}/media",
@@ -180,16 +198,17 @@ fn url_for_query(libby_user: &LibbyUser, book_type: BookType, title: &str) -> Re
                 .as_ref()
                 .expect("Must have library key set to search")
         ),
-        &[
-            ("query", title),
-            ("mediaTypes", &book_type.to_string()),
-            ("perPage", "24"),
-            ("page", "1"),
-            ("x-client-id", "dewey"),
-        ],
+        &url_params,
     )?;
     debug!("uri: {:?}", url);
     Ok(url)
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchOptions {
+    pub book_type: BookType,
+    pub deep_search: bool,
+    pub max_results: usize,
 }
 
 pub struct LibbyClient {
@@ -277,11 +296,11 @@ impl LibbyClient {
 
     pub async fn search_for_book_by_title(
         &self,
-        book_type: BookType,
+        search_opts: SearchOptions,
         title: &str,
         authors: Option<&HashSet<String>>,
     ) -> Result<BookInfo> {
-        let url = url_for_query(&self.libby_user, book_type.clone(), title)?;
+        let url = url_for_query(&self.libby_user, search_opts.clone(), title)?;
         let mut response = self
             .make_libby_library_get_request::<LibbySearchResult, _>(url)
             .await?;
@@ -291,7 +310,7 @@ impl LibbyClient {
         // try with any part of title leading to ':'
         if response.items.is_empty() && title.contains(':') {
             if let Some(t2) = title.split_once(':').map(|(t2, _)| t2) {
-                let url = url_for_query(&self.libby_user, book_type, t2)?;
+                let url = url_for_query(&self.libby_user, search_opts, t2)?;
                 response = self
                     .make_libby_library_get_request::<LibbySearchResult, _>(url)
                     .await?;

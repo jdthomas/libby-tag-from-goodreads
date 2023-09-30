@@ -50,6 +50,10 @@ struct CommandArgs {
     #[clap(long, default_value = "audiobook")]
     book_type: BookType,
 
+    /// Include books that your library does not currently have
+    #[clap(long)]
+    include_unavailable: bool,
+
     /// Does all the work with the exception of writing the tags to libby
     #[clap(long)]
     dry_run: bool,
@@ -106,7 +110,15 @@ async fn main() -> anyhow::Result<()> {
             continue;
         }
         let found_book = libby_client
-            .search_for_book_by_title(command_args.book_type.clone(), title, Some(authors))
+            .search_for_book_by_title(
+                libby::SearchOptions {
+                    book_type: command_args.book_type.clone(),
+                    deep_search: command_args.include_unavailable,
+                    max_results: 24,
+                },
+                title,
+                Some(authors),
+            )
             .await;
 
         match found_book {

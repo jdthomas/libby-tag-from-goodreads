@@ -9,6 +9,7 @@ edition = "2021"
 anyhow = "1.0.71"
 base64 = "0.21.2"
 clap = { version = "4.3.10", features = ["derive"] }
+colored = "2.0.4"
 csv = "1.2.2"
 edit-distance = "2.1.0"
 itertools = "0.11.0"

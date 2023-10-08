@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use tracing::{debug, info};
 use tracing_subscriber::filter::Directive;
+use colored::Colorize;
 
 pub mod goodreads;
 pub mod libby;
@@ -124,9 +125,9 @@ async fn main() -> anyhow::Result<()> {
         match found_book {
             Ok(book_info) => {
                 if existing_book_ids.contains(&book_info.libby_id) {
-                    println!("Already tagged '{}'", book_info.title);
+                    println!("{:20} '{}'", "Already tagged".yellow(), book_info.title);
                 } else {
-                    println!("Tagging        '{}'", book_info.title);
+                    println!("{:20}'{}'", "Tagging".green(), book_info.title);
                     if !command_args.dry_run {
                         libby_client
                             .tag_book_by_overdrive_id(&tag_info, &book_info.libby_id)
@@ -136,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             Err(e) => {
-                println!("Could not find '{}' -- {:?}", title, e);
+                println!("{:20} '{}' -- {:?}","Could not find".red(), title, e);
             }
         }
     }

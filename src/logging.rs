@@ -8,7 +8,7 @@ use tracing_subscriber::Registry;
 pub fn init_logging(directives: Vec<Directive>) {
     let fmt = tracing_subscriber::fmt::Layer::default()
         .event_format(Glog::default())
-        .fmt_fields(GlogFields);
+        .fmt_fields(GlogFields::default());
 
     let filter = directives
         .into_iter()

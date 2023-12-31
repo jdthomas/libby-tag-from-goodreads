@@ -1,3 +1,7 @@
+use std::collections::HashSet;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
 use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;
@@ -6,8 +10,6 @@ use itertools::Itertools;
 use reqwest::IntoUrl;
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
 
 #[derive(Clone, Debug, Parser)]
@@ -29,6 +31,7 @@ pub struct LibbyUser {
 pub struct TagInfo {
     pub uuid: String,
     pub name: String,
+    pub total_tagged: i64,
 }
 
 #[derive(Debug)]
@@ -38,7 +41,7 @@ pub struct BookInfo {
 }
 
 #[allow(dead_code)]
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(clap::ValueEnum, Clone, Debug, Copy)]
 pub enum BookType {
     Audiobook,
     Ebook,
@@ -141,12 +144,14 @@ struct LibbyTaggedItem {
     // titleSubjects: Option<Vec<LibbySubject>>, // Fixme: when empty gives `{}` instad of [] cannot parse
 }
 #[allow(dead_code)]
+#[allow(non_snake_case)]
 #[derive(Deserialize, Debug, Clone)]
 struct LibbyTag {
     name: String,
     description: Option<String>,
     taggings: Vec<LibbyTaggedItem>,
     uuid: String,
+    totalTaggings: i64,
 }
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
@@ -255,10 +260,12 @@ impl LibbyClient {
 
     pub async fn get_books_for_tag(&self, tag_info: &TagInfo) -> Result<Vec<BookInfo>> {
         let url = format!(
-            "https://vandal.svc.overdrive.com/tag/{}/{}?enc=1&sort=newest",
+            "https://vandal.svc.overdrive.com/tag/{}/{}?enc=1&sort=newest&range=0...{}",
             tag_info.uuid,
-            encode_name(&tag_info.name)
+            encode_name(&tag_info.name),
+            tag_info.total_tagged,
         );
+        debug!("~~JT~~: URL={url}");
 
         let response = self
             .make_logged_in_libby_get_request::<LibbyTagQuery, _>(url)
@@ -348,6 +355,7 @@ impl LibbyClient {
         found.map(|lt| TagInfo {
             name: lt.name,
             uuid: lt.uuid,
+            total_tagged: lt.totalTaggings,
         })
     }
 

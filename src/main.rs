@@ -1,20 +1,23 @@
-use clap::Parser;
+#![feature(async_closure)]
+
 use std::collections::HashSet;
 use std::path::PathBuf;
-use tracing::{debug, info};
-use tracing_subscriber::filter::Directive;
+
+use clap::Parser;
 use colored::Colorize;
+use futures::StreamExt;
+use tracing::debug;
+use tracing::info;
+use tracing_subscriber::filter::Directive;
 
 pub mod goodreads;
 pub mod libby;
 pub mod logging;
 
 use goodreads::get_book_titles_from_goodreads_shelf;
-
 use libby::BookType;
 use libby::LibbyClient;
 use libby::LibbyUser;
-
 use logging::init_logging;
 
 #[derive(Debug, Parser)]
@@ -59,6 +62,13 @@ struct CommandArgs {
     #[clap(long)]
     dry_run: bool,
 }
+fn normalize_title(input: &str) -> String {
+    input
+        .chars()
+        .filter(|&c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase()
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -78,11 +88,17 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     let existing_books = libby_client.get_books_for_tag(&tag_info).await?;
-    let existing_book_titles: HashSet<String> =
-        existing_books.iter().map(|b| b.title.clone()).collect();
+    let existing_book_titles: HashSet<String> = existing_books
+        .iter()
+        .map(|b| normalize_title(&b.title))
+        .collect();
     let mut existing_book_ids: HashSet<String> =
         existing_books.iter().map(|b| b.libby_id.clone()).collect();
-    info!("Found {} existing books", existing_book_ids.len());
+    info!(
+        "Found {} existing books ({} titles)",
+        existing_book_ids.len(),
+        existing_book_titles.len()
+    );
 
     let goodread_books = if let Some(intersect_with_goodreads_export_csv) =
         command_args.intersect_with_goodreads_export_csv
@@ -105,27 +121,51 @@ async fn main() -> anyhow::Result<()> {
     };
 
     debug!("books: {:#?}", goodread_books);
-    for goodreads::BookInfo { title, authors, .. } in goodread_books.iter() {
-        if existing_book_titles.contains(title) {
-            println!("Already tagged '{}'", title);
-            continue;
-        }
-        let found_book = libby_client
-            .search_for_book_by_title(
-                libby::SearchOptions {
-                    book_type: command_args.book_type.clone(),
-                    deep_search: command_args.include_unavailable,
-                    max_results: 24,
-                },
-                title,
-                Some(authors),
-            )
-            .await;
 
+    let lc = &libby_client;
+    let book_type = command_args.book_type;
+    let deep_search = command_args.include_unavailable;
+
+    let mut found_books = futures::stream::iter(
+        goodread_books
+            .iter()
+            .filter(|goodreads::BookInfo { title, .. }| {
+                if existing_book_titles.contains(&normalize_title(title)) {
+                    println!(
+                        "{:20} '{}'",
+                        "Already tagged (title)".bright_yellow(),
+                        title
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
+            .map(async move |goodreads::BookInfo { title, authors, .. }| {
+                let found_book = lc
+                    .search_for_book_by_title(
+                        libby::SearchOptions {
+                            book_type,
+                            deep_search,
+                            max_results: 24,
+                        },
+                        title,
+                        Some(authors),
+                    )
+                    .await;
+                (title, found_book)
+            }),
+    )
+    .buffer_unordered(25);
+    while let Some((title, found_book)) = found_books.next().await {
         match found_book {
             Ok(book_info) => {
                 if existing_book_ids.contains(&book_info.libby_id) {
-                    println!("{:20} '{}'", "Already tagged".yellow(), book_info.title);
+                    println!(
+                        "{:20} '{}'",
+                        "Already tagged (id)".yellow(),
+                        book_info.title
+                    );
                 } else {
                     println!("{:20}'{}'", "Tagging".green(), book_info.title);
                     if !command_args.dry_run {
@@ -137,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             Err(e) => {
-                println!("{:20} '{}' -- {:?}","Could not find".red(), title, e);
+                println!("{:20} '{}' -- {:?}", "Could not find".red(), title, e);
             }
         }
     }

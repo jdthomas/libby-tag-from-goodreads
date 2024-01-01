@@ -1,5 +1,3 @@
-#![feature(async_closure)]
-
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -141,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
                     true
                 }
             })
-            .map(async move |goodreads::BookInfo { title, authors, .. }| {
+            .map(|goodreads::BookInfo { title, authors, .. }| async move {
                 let found_book = lc
                     .search_for_book_by_title(
                         libby::SearchOptions {

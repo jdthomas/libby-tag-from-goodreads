@@ -73,7 +73,13 @@ async fn main() -> anyhow::Result<()> {
     let command_args = CommandArgs::parse();
     init_logging(command_args.log);
 
-    let libby_client = LibbyClient::new(command_args.libby_user.clone()).await?;
+    let libby_user = if command_args.libby_user.bearer_token.is_empty() {
+        libby::prepare_user("libby_config.json", command_args.libby_user).await?
+    } else {
+        command_args.libby_user.clone()
+    };
+
+    let libby_client = LibbyClient::new(libby_user).await?;
 
     let tag_info = libby_client
         .get_existing_tag_by_name(&command_args.tag_name)

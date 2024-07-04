@@ -18,4 +18,5 @@ run.sh
 run_log.txt
 *.csv
 perf.data
+libby_config.json
 

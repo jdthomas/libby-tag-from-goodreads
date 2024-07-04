@@ -9,6 +9,7 @@ use clap::Parser;
 use itertools::Itertools;
 use reqwest::IntoUrl;
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
 use tracing::debug;
 
@@ -18,6 +19,7 @@ pub struct LibbyUser {
     #[clap(long)]
     pub card_id: String,
 
+    // pub card_pin: String,
     /// Open libbyapp.com in your browser of choice and after logging in w/ a
     /// library card, use the browser's debug tools to find the value of the
     /// 'Authorization' header as part of any request
@@ -28,6 +30,22 @@ pub struct LibbyUser {
     pub library_advantage_key: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct LibbyConfig {
+    bearer_token: String,
+}
+pub async fn prepare_user(path: &str, mut libby_user: LibbyUser) -> Result<LibbyUser> {
+    let config = tokio::fs::read_to_string(path).await?;
+    let config: LibbyConfig = serde_json::from_str(&config)?;
+    libby_user.bearer_token = config.bearer_token;
+    if libby_user.bearer_token.is_empty() {
+        // TODO: prompt to copy from another device
+        anyhow::bail!("empty bearer token");
+    }
+    Ok(libby_user)
+}
+
+#[derive(Debug)]
 pub struct TagInfo {
     pub uuid: String,
     pub name: String,
@@ -216,9 +234,20 @@ pub struct SearchOptions {
     pub max_results: usize,
 }
 
+#[allow(dead_code)]
+#[allow(non_snake_case)]
+#[derive(Deserialize, Debug, Clone)]
+pub struct Chip {
+    chip: Option<String>,
+    identity: String,
+    syncable: bool,
+    primary: bool,
+}
+
 pub struct LibbyClient {
     client: reqwest::Client,
     libby_user: LibbyUser,
+    chip: Option<Chip>,
 }
 impl LibbyClient {
     pub async fn new(libby_user: LibbyUser) -> Result<Self> {
@@ -229,12 +258,38 @@ impl LibbyClient {
             )
             .build()?,
             libby_user,
+            chip: None,
         };
-        let library_advantage_key = client.get_library_info_for_card().await?;
 
+        client.update_chip().await?;
+
+        let library_advantage_key = client.get_library_info_for_card().await?;
         client.libby_user.library_advantage_key = Some(library_advantage_key);
 
         Ok(client)
+    }
+
+    async fn update_chip(&mut self) -> Result<()> {
+        let url = "https://sentry.libbyapp.com/chip?c=d%3A16.8.0&s=0";
+
+        let resp = self
+            .client
+            .post(url)
+            .header("Origin", "https://libbyapp.com")
+            .header("Referer", "https://libbyapp.com")
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Site", "same-site")
+            .bearer_auth(self.libby_user.bearer_token.clone())
+            .send()
+            .await
+            .context("libby post requst")?
+            .text()
+            .await
+            .context("libby post response")?;
+        self.chip = Some(serde_json::from_str(&resp)?);
+
+        Ok(())
     }
 
     pub async fn tag_book_by_overdrive_id(&self, tag_info: &TagInfo, title_id: &str) -> Result<()> {
@@ -244,7 +299,7 @@ impl LibbyClient {
             .as_secs();
 
         let url = format!(
-            "https://vandal.svc.overdrive.com/tag/{}/{}/tagging/{}?enc=1",
+            "https://vandal.libbyapp.com/tag/tag/{}/{}/tagging/{}?enc=1",
             tag_info.uuid,
             encode_name(&tag_info.name),
             title_id
@@ -260,7 +315,7 @@ impl LibbyClient {
 
     pub async fn get_books_for_tag(&self, tag_info: &TagInfo) -> Result<Vec<BookInfo>> {
         let url = format!(
-            "https://vandal.svc.overdrive.com/tag/{}/{}?enc=1&sort=newest&range=0...{}",
+            "https://vandal.libbyapp.com/tag/{}/{}?enc=1&sort=newest&range=0...{}",
             tag_info.uuid,
             encode_name(&tag_info.name),
             tag_info.total_tagged,
@@ -285,7 +340,7 @@ impl LibbyClient {
     }
 
     async fn get_library_info_for_card(&self) -> Result<String> {
-        let url = "https://sentry-read.svc.overdrive.com/chip/sync";
+        let url = "https://sentry.libbyapp.com/chip/sync";
 
         let response = self
             .make_logged_in_libby_get_request::<LibbyCardSync, _>(url)
@@ -338,12 +393,11 @@ impl LibbyClient {
     }
 
     pub async fn get_existing_tag_by_name(&self, name: &str) -> Result<TagInfo> {
+        debug!("Here");
         let response = self
-            .make_libby_library_get_request::<LibbyTagList, _>(
-                "https://vandal.svc.overdrive.com/tags",
-            )
+            .make_libby_library_get_request::<LibbyTagList, _>("https://vandal.libbyapp.com/tags")
             .await?;
-        debug!("{:#?}", response);
+        debug!("Resp: {:#?}", response);
 
         let found = response
             .tags
@@ -366,10 +420,10 @@ impl LibbyClient {
         self.client
             .get(url)
             .header("Origin", "https://libbyapp.com")
-            .header("Referer", "https://libbyapp.com")
+            .header("Referer", "https://libbyapp.com/")
             .header("Sec-Fetch-Dest", "empty")
             .header("Sec-Fetch-Mode", "cors")
-            .header("Sec-Fetch-Site", "cross-site")
+            .header("Sec-Fetch-Site", "same-site")
             .bearer_auth(self.libby_user.bearer_token.clone())
             .body("")
             .send()
@@ -379,6 +433,7 @@ impl LibbyClient {
             .await
             .context("libby request parsing")
     }
+
     async fn make_logged_in_libby_post_request<U: IntoUrl>(
         &self,
         url: U,
@@ -387,10 +442,10 @@ impl LibbyClient {
         self.client
             .post(url)
             .header("Origin", "https://libbyapp.com")
-            .header("Referer", "https://libbyapp.com")
+            .header("Referer", "https://libbyapp.com/")
             .header("Sec-Fetch-Dest", "empty")
             .header("Sec-Fetch-Mode", "cors")
-            .header("Sec-Fetch-Site", "cross-site")
+            .header("Sec-Fetch-Site", "same-site")
             .bearer_auth(self.libby_user.bearer_token.clone())
             .json(&data)
             .send()
@@ -405,28 +460,35 @@ impl LibbyClient {
         &self,
         url: U,
     ) -> Result<T> {
-        self.client
+        debug!("{:?}", self.chip);
+        let text = self
+            .client
             .get(url)
             .header("Origin", "https://libbyapp.com")
-            .header("Referer", "https://libbyapp.com")
+            .header("Referer", "https://libbyapp.com/")
             .header("Sec-Fetch-Dest", "empty")
             .header("Sec-Fetch-Mode", "cors")
-            .header("Sec-Fetch-Site", "cross-site")
+            .header("Sec-Fetch-Site", "same-site")
             .bearer_auth(self.libby_user.bearer_token.clone())
-            .body("")
             .send()
             .await
             .context("library request")?
-            .json::<T>()
-            .await
-            .context("library request parsing")
+            .text()
+            .await?;
+        // .json::<T>()
+        // .await
+        // .context("library request parsing")
+        debug!("resp text: {:?}", text);
+        Ok(serde_json::from_str(&text).context("library request parsign")?)
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-
+    fn token() -> String {
+        std::env::var("LIBBY_TOKEN").expect("Set LIBBY_TOKEN env var")
+    }
     #[test]
     fn test_encode_name() {
         assert_eq!(
@@ -434,5 +496,55 @@ mod test {
             "JXVEODNEJXVEQzY4JXVEODNDJXVERkZCJXUyMDBEJXVEODNFJXVEREIyJXVEODNDJXVERkE3"
         );
         assert_eq!(encode_name("🔔"), "JXVEODNEJXVERDE0");
+    }
+
+    // sentry.libbyapp.com
+    #[tokio::test]
+    #[ignore]
+    async fn test_client_create() {
+        let libby_user = LibbyUser {
+            card_id: "10534952".to_owned(),
+            bearer_token: token(),
+            library_advantage_key: None,
+        };
+        let _libby_client = LibbyClient::new(libby_user).await.expect("create client");
+    }
+
+    #[test_log::test(tokio::test)]
+    async fn test_query_tags() {
+        let tag_name = "👨‍🔬testing".to_owned();
+        let libby_user = LibbyUser {
+            card_id: "10534952".to_owned(),
+            bearer_token: token(),
+            library_advantage_key: None,
+        };
+        let libby_client = LibbyClient::new(libby_user).await.expect("create client");
+
+        let tag_info = libby_client
+            .get_existing_tag_by_name(&tag_name)
+            .await
+            .expect("load tag");
+        debug!("tag info: {:#?}", tag_info);
+        let existing_books = libby_client
+            .get_books_for_tag(&tag_info)
+            .await
+            .expect("tag as books");
+        debug!("books: {:#?}", existing_books);
+
+        // test search
+        let title = " The Cuckoo's Egg";
+        let authors = HashSet::from_iter(["Cliff Stoll".to_owned()]);
+        libby_client
+            .search_for_book_by_title(
+                SearchOptions {
+                    book_type: BookType::Audiobook,
+                    deep_search: false,
+                    max_results: 24,
+                },
+                title,
+                Some(&authors),
+            )
+            .await
+            .expect("Seaerch okay");
     }
 }

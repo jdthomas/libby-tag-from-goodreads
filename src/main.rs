@@ -122,6 +122,17 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
     let libby_client = LibbyClient::new(libby_conf_file, command_args.card_id).await?;
 
     eprintln!("Client setup: {}", libby_client);
+    eprintln!(
+        "Will {} tag books (of type {}) from goodreads shelf {}  with tag {}",
+        if command_args.dry_run {
+            "(dry-run)"
+        } else {
+            ""
+        },
+        command_args.book_type,
+        command_args.goodreads_shelf,
+        command_args.tag_name,
+    );
 
     let tag_info = libby_client
         .get_existing_tag_by_name(&command_args.tag_name)
@@ -203,16 +214,22 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
             }),
     )
     .buffer_unordered(25);
+    let mut existing_ct = 0;
+    let mut newly_tagged_ct = 0;
+    let mut not_found_ct = 0;
+
     while let Some((title, found_book)) = found_books.next().await {
         match found_book {
             Ok(book_info) => {
                 if existing_book_ids.contains(&book_info.libby_id) {
+                    existing_ct += 1;
                     println!(
                         "{:20} '{}'",
                         "Already tagged (id)".yellow(),
                         book_info.title
                     );
                 } else {
+                    newly_tagged_ct += 1;
                     println!("{:20}'{}'", "Tagging".green(), book_info.title);
                     if !command_args.dry_run {
                         libby_client
@@ -223,10 +240,15 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
                 }
             }
             Err(e) => {
+                not_found_ct += 1;
                 println!("{:20} '{}' -- {:?}", "Could not find".red(), title, e);
             }
         }
     }
+    println!(
+        "Summary: Tagged {}, Existing {}, Not Found {}.",
+        newly_tagged_ct, existing_ct, not_found_ct
+    );
 
     Ok(())
 }

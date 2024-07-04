@@ -206,6 +206,13 @@ struct LibbySearchResultItem {
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
+struct LibbyResult {
+    result: String,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct LibbySearchResult {
     items: Vec<LibbySearchResultItem>,
     total_items: i64,
@@ -366,16 +373,19 @@ impl LibbyClient {
             .as_secs();
 
         let url = format!(
-            "https://vandal.libbyapp.com/tag/tag/{}/{}/tagging/{}?enc=1",
+            "https://vandal.libbyapp.com/tag/{}/{}/tagging/{}?enc=1",
             tag_info.uuid,
             encode_name(&tag_info.name),
             title_id
         );
         debug!("~~JT~~: url={:?}", url);
-
+        // {"tag":{"name":"\ud83d\udc68\u200d\ud83d\udd2ctesting","uuid":"3cbf0e3d-b47e-42cf-bd5e-0da8402a273b","createTime":1688410022507,"totalTaggings":589,"behaviors":{}}}
         let data = json!({ "tagging": { "cardId": self.card.card_id, "createTime": now, "titleId": title_id, "websiteId": self.card.library.website_id } });
         debug!("~~JT~~: {:#?}", data.to_string());
-        let response = self.make_logged_in_libby_post_request(url, &data).await?;
+        let response: LibbyResult = self.make_logged_in_libby_post_request(url, &data).await?;
+        if response.result != "created" {
+            bail!("Unable to tag book: {response:?}");
+        }
         debug!("{:#?}", response);
         Ok(())
     }
@@ -512,11 +522,11 @@ impl LibbyClient {
             .context("libby request parsing")
     }
 
-    async fn make_logged_in_libby_post_request<U: IntoUrl>(
+    async fn make_logged_in_libby_post_request<T: serde::de::DeserializeOwned, U: IntoUrl>(
         &self,
         url: U,
         data: &serde_json::Value,
-    ) -> Result<String> {
+    ) -> Result<T> {
         self.client
             .post(url)
             .bearer_auth(&self.chip.identity)
@@ -524,7 +534,7 @@ impl LibbyClient {
             .send()
             .await
             .context("libby post requst")?
-            .text()
+            .json::<T>()
             .await
             .context("libby post response")
     }

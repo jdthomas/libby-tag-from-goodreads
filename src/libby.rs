@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -22,13 +23,6 @@ pub struct LibbyUser {
     #[clap(long)]
     pub card_id: String,
 
-    // pub card_pin: String,
-    /// Open libbyapp.com in your browser of choice and after logging in w/ a
-    /// library card, use the browser's debug tools to find the value of the
-    /// 'Authorization' header as part of any request
-    #[clap(long)]
-    pub bearer_token: String,
-
     #[clap(skip)]
     pub library_advantage_key: Option<String>,
 }
@@ -41,16 +35,6 @@ impl LibbyConfig {
     pub fn to_json(&self) -> Result<String> {
         Ok(serde_json::to_string_pretty(self)?)
     }
-}
-pub async fn prepare_user(path: &str, mut libby_user: LibbyUser) -> Result<LibbyUser> {
-    let config = tokio::fs::read_to_string(path).await?;
-    let config: LibbyConfig = serde_json::from_str(&config)?;
-    libby_user.bearer_token = config.bearer_token;
-    if libby_user.bearer_token.is_empty() {
-        // TODO: prompt to copy from another device
-        bail!("empty bearer token");
-    }
-    Ok(libby_user)
 }
 
 #[derive(Debug, Deserialize)]
@@ -106,6 +90,19 @@ pub async fn login(code: String) -> Result<LibbyConfig> {
         bearer_token: chip.identity,
     })
 }
+async fn chip(client: &reqwest::Client, identity: &str) -> Result<Chip> {
+    let url = "https://sentry.libbyapp.com/chip?c=d%3A16.8.0&s=0";
+    let chip: Chip = client
+        .post(url)
+        .bearer_auth(identity)
+        .send()
+        .await
+        .context("libby post requst")?
+        .json()
+        .await
+        .context("libby post response")?;
+    Ok(chip)
+}
 
 #[derive(Debug)]
 pub struct TagInfo {
@@ -143,23 +140,28 @@ fn encode_name(name: &str) -> String {
 }
 
 #[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Deserialize, Debug, Clone)]
-struct LibbyCard {
-    cardId: String,
-    advantageKey: String,
-    cardName: String,
-    // limits:
+#[serde(rename_all = "camelCase")]
+struct Library {
+    website_id: String,
+    name: String,
 }
 #[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct LibbyCard {
+    card_id: String,
+    advantage_key: String,
+    card_name: String,
+    library: Library,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct LibbyCardSync {
     cards: Vec<LibbyCard>,
-    // holds: Vec<LibbySearchResultItem>,
-    // loans: Vec<LibbySearchResultItem>,
-    // result: String,
-    // summary: BTreeMap<String, _>, // {cards: "done", holds: "done", loans: "done"}
+    result: String,
 }
 
 #[allow(dead_code)]
@@ -170,10 +172,10 @@ struct LibbyBookType {
 }
 
 #[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct LibbySearchResultItem {
-    isAvailable: bool,
+    is_available: bool,
     // isOwned: bool,
     // ownedCopies: Option<i64>,
     // edition: Option<String>,
@@ -185,9 +187,9 @@ struct LibbySearchResultItem {
     // availableCopies: i64,
     // starRating: Option<f64>,
     // starRatingCount: Option<i64>,
-    firstCreatorName: String,
+    first_creator_name: String,
     // subjects: Vec<serde_json::Value>,
-    sortTitle: String,
+    sort_title: String,
     // title: String,
     // subtitle: String,
     #[serde(alias = "type")]
@@ -195,11 +197,11 @@ struct LibbySearchResultItem {
 }
 
 #[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct LibbySearchResult {
     items: Vec<LibbySearchResultItem>,
-    totalItems: i64,
+    total_items: i64,
 }
 
 #[allow(dead_code)]
@@ -214,24 +216,24 @@ struct LibbySubject {
     name: String,
 }
 #[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct LibbyTaggedItem {
-    titleId: String,
-    titleFormat: String, // TODO: Enum { audiobook, .. }
-    sortTitle: String,
-    sortAuthor: String,
+    title_id: String,
+    title_format: String, // TODO: Enum { audiobook, .. }
+    sort_title: String,
+    sort_author: String,
     // titleSubjects: Option<Vec<LibbySubject>>, // Fixme: when empty gives `{}` instad of [] cannot parse
 }
 #[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct LibbyTag {
     name: String,
     description: Option<String>,
     taggings: Vec<LibbyTaggedItem>,
     uuid: String,
-    totalTaggings: i64,
+    total_taggings: i64,
 }
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
@@ -257,7 +259,7 @@ fn fuzzy_author_compare(haystack: &HashSet<String>, needle: &str) -> bool {
 }
 
 fn url_for_query(
-    libby_user: &LibbyUser,
+    library_advantage_key: &str,
     search_opts: SearchOptions,
     title: &str,
 ) -> Result<reqwest::Url> {
@@ -278,10 +280,7 @@ fn url_for_query(
     let url = reqwest::Url::parse_with_params(
         &format!(
             "https://thunder.api.overdrive.com/v2/libraries/{}/media",
-            libby_user
-                .library_advantage_key
-                .as_ref()
-                .expect("Must have library key set to search")
+            library_advantage_key
         ),
         &url_params,
     )?;
@@ -297,8 +296,8 @@ pub struct SearchOptions {
 }
 
 #[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Chip {
     chip: Option<String>,
     identity: String,
@@ -306,12 +305,34 @@ pub struct Chip {
     primary: bool,
 }
 
+#[allow(dead_code)]
 pub struct LibbyClient {
     client: reqwest::Client,
-    libby_user: LibbyUser,
-    chip: Option<Chip>,
+    config: LibbyConfig,
+    chip: Chip,
+    card: LibbyCard,
 }
 impl LibbyClient {
+    /// Create a new Libby client
+    pub async fn new(libby_conf_file: PathBuf, card_id: String) -> Result<Self> {
+        let config: LibbyConfig = serde_json::from_str(
+            &tokio::fs::read_to_string(libby_conf_file)
+                .await
+                .context("reading libby config file")?,
+        )
+        .context("parsing libby config")?;
+        let client = Self::reqwest_client()?;
+        let chip = chip(&client, &config.bearer_token).await?;
+        let card = Self::get_library_card(&client, &chip.identity, &card_id).await?;
+        Ok(Self {
+            client,
+            config,
+            chip,
+            card,
+        })
+    }
+
+    /// Helper to create reqwest client with some common defaults
     fn reqwest_client() -> Result<reqwest::Client> {
         let mut headers = HeaderMap::new();
         headers.insert("Origin", HeaderValue::from_static("https://libbyapp.com"));
@@ -324,40 +345,6 @@ impl LibbyClient {
             .default_headers(headers)
             .build()?;
         Ok(client)
-    }
-
-    /// Create a new Libby client
-    pub async fn new(libby_user: LibbyUser) -> Result<Self> {
-        let mut client = Self {
-            client: Self::reqwest_client()?,
-            libby_user,
-            chip: None,
-        };
-
-        client.update_chip().await?;
-
-        let library_advantage_key = client.get_library_info_for_card().await?;
-        client.libby_user.library_advantage_key = Some(library_advantage_key);
-
-        Ok(client)
-    }
-
-    async fn update_chip(&mut self) -> Result<()> {
-        let url = "https://sentry.libbyapp.com/chip?c=d%3A16.8.0&s=0";
-
-        let resp = self
-            .client
-            .post(url)
-            .bearer_auth(self.libby_user.bearer_token.clone())
-            .send()
-            .await
-            .context("libby post requst")?
-            .text()
-            .await
-            .context("libby post response")?;
-        self.chip = Some(serde_json::from_str(&resp)?);
-
-        Ok(())
     }
 
     pub async fn tag_book_by_overdrive_id(&self, tag_info: &TagInfo, title_id: &str) -> Result<()> {
@@ -374,7 +361,7 @@ impl LibbyClient {
         );
         debug!("~~JT~~: url={:?}", url);
 
-        let data = json!({ "tagging": { "cardId": self.libby_user.card_id, "createTime": now, "titleId": title_id, "websiteId": "83" } });
+        let data = json!({ "tagging": { "cardId": self.card.card_id, "createTime": now, "titleId": title_id, "websiteId": self.card.library.website_id } });
         debug!("~~JT~~: {:#?}", data.to_string());
         let response = self.make_logged_in_libby_post_request(url, &data).await?;
         debug!("{:#?}", response);
@@ -401,26 +388,38 @@ impl LibbyClient {
             .taggings
             .iter()
             .map(|tag| BookInfo {
-                libby_id: tag.titleId.clone(),
-                title: tag.sortTitle.clone(),
+                libby_id: tag.title_id.clone(),
+                title: tag.sort_title.clone(),
             })
             .collect::<Vec<BookInfo>>())
     }
 
-    async fn get_library_info_for_card(&self) -> Result<String> {
+    async fn get_library_card(
+        client: &reqwest::Client,
+        identity: &str,
+        card_id: &str,
+    ) -> Result<LibbyCard> {
         let url = "https://sentry.libbyapp.com/chip/sync";
 
-        let response = self
-            .make_logged_in_libby_get_request::<LibbyCardSync, _>(url)
-            .await?;
+        let card_sync: LibbyCardSync = client
+            .get(url)
+            .bearer_auth(identity)
+            .send()
+            .await
+            .context("libby request")?
+            .json()
+            .await
+            .context("libby request parsing")?;
 
-        debug!("{:#?}", response);
+        debug!("{:#?}", card_sync);
+        if card_sync.result != "synchronized" {
+            bail!("Unable to sync card: {card_sync:?}");
+        }
 
-        response
+        card_sync
             .cards
-            .iter()
-            .find(|card| card.cardId == self.libby_user.card_id)
-            .map(|card| card.advantageKey.clone())
+            .into_iter()
+            .find(|card| card.card_id == card_id)
             .context("Unable to sync card")
     }
 
@@ -430,7 +429,7 @@ impl LibbyClient {
         title: &str,
         authors: Option<&HashSet<String>>,
     ) -> Result<BookInfo> {
-        let url = url_for_query(&self.libby_user, search_opts.clone(), title)?;
+        let url = url_for_query(&self.card.advantage_key, search_opts.clone(), title)?;
         let mut response = self
             .make_libby_library_get_request::<LibbySearchResult, _>(url)
             .await?;
@@ -440,7 +439,7 @@ impl LibbyClient {
         // try with any part of title leading to ':'
         if response.items.is_empty() && title.contains(':') {
             if let Some(t2) = title.split_once(':').map(|(t2, _)| t2) {
-                let url = url_for_query(&self.libby_user, search_opts, t2)?;
+                let url = url_for_query(&self.card.advantage_key, search_opts, t2)?;
                 response = self
                     .make_libby_library_get_request::<LibbySearchResult, _>(url)
                     .await?;
@@ -451,10 +450,10 @@ impl LibbyClient {
             .items
             .iter()
             .find(|b| {
-                authors.is_none() || fuzzy_author_compare(authors.unwrap(), &b.firstCreatorName)
+                authors.is_none() || fuzzy_author_compare(authors.unwrap(), &b.first_creator_name)
             })
             .map(|b| BookInfo {
-                title: b.sortTitle.to_string(),
+                title: b.sort_title.to_string(),
                 libby_id: b.id.to_string(),
             })
             .context(format!("Book '{}' not found", title))
@@ -477,7 +476,7 @@ impl LibbyClient {
         found.map(|lt| TagInfo {
             name: lt.name,
             uuid: lt.uuid,
-            total_tagged: lt.totalTaggings,
+            total_tagged: lt.total_taggings,
         })
     }
 
@@ -487,7 +486,7 @@ impl LibbyClient {
     ) -> Result<T> {
         self.client
             .get(url)
-            .bearer_auth(self.libby_user.bearer_token.clone())
+            .bearer_auth(&self.chip.identity)
             .body("")
             .send()
             .await
@@ -504,7 +503,7 @@ impl LibbyClient {
     ) -> Result<String> {
         self.client
             .post(url)
-            .bearer_auth(self.libby_user.bearer_token.clone())
+            .bearer_auth(&self.chip.identity)
             .json(&data)
             .send()
             .await
@@ -522,7 +521,7 @@ impl LibbyClient {
         let text = self
             .client
             .get(url)
-            .bearer_auth(self.libby_user.bearer_token.clone())
+            .bearer_auth(&self.chip.identity)
             .send()
             .await
             .context("library request")?
@@ -533,6 +532,20 @@ impl LibbyClient {
         // .context("library request parsing")
         debug!("resp text: {:?}", text);
         serde_json::from_str(&text).context("library request parsign")
+    }
+}
+
+impl std::fmt::Display for LibbyClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Libby Client for card {} (id={}). Library: {} (id={},key={})",
+            self.card.card_name,
+            self.card.card_id,
+            self.card.library.name,
+            self.card.library.website_id,
+            self.card.advantage_key
+        )
     }
 }
 

@@ -16,7 +16,6 @@ pub mod logging;
 use goodreads::get_book_titles_from_goodreads_shelf;
 use libby::BookType;
 use libby::LibbyClient;
-use libby::LibbyUser;
 use logging::init_logging;
 
 #[derive(Subcommand, Debug)]
@@ -37,12 +36,13 @@ struct LoginArgs {
 
 #[derive(Parser, Debug, Clone)]
 struct GR2LibbyArgs {
-    #[clap(flatten)]
-    libby_user: LibbyUser,
-
     /// The name of the tag in Libby to set
     #[clap(short, long = "tag")]
     tag_name: String,
+
+    /// The card id in Libby to set the tag on
+    #[clap(long)]
+    card_id: String,
 
     /// Path to local file with a goodreads exported csv.
     /// For information on how to export, see this article:
@@ -106,20 +106,14 @@ async fn main() -> anyhow::Result<()> {
             tokio::fs::write(&app_args.libby_conf_file, lc.to_json()?).await?
         }
         Commands::Gr2lib(command_args) => {
-            gr2libby(command_args).await?;
+            gr2libby(command_args, app_args.libby_conf_file).await?;
         }
     }
     Ok(())
 }
 
-async fn gr2libby(command_args: GR2LibbyArgs) -> anyhow::Result<()> {
-    let libby_user = if command_args.libby_user.bearer_token.is_empty() {
-        libby::prepare_user("libby_config.json", command_args.libby_user).await?
-    } else {
-        command_args.libby_user.clone()
-    };
-
-    let libby_client = LibbyClient::new(libby_user).await?;
+async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyhow::Result<()> {
+    let libby_client = LibbyClient::new(libby_conf_file, command_args.card_id).await?;
 
     let tag_info = libby_client
         .get_existing_tag_by_name(&command_args.tag_name)

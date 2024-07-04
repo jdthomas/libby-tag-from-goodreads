@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use clap::Parser;
+use clap::Subcommand;
 use colored::Colorize;
 use futures::StreamExt;
 use tracing::debug;
@@ -18,12 +19,24 @@ use libby::LibbyClient;
 use libby::LibbyUser;
 use logging::init_logging;
 
-#[derive(Debug, Parser)]
+#[derive(Subcommand, Debug)]
 #[clap(name = "Goodreads shelves to Libby tag")]
-struct CommandArgs {
-    #[clap(short, long, default_value = "info", hide = true)]
-    log: Vec<Directive>,
+enum Commands {
+    /// Uses the copy from device login flow to create bearer token.
+    Login(LoginArgs),
+    /// Takes as input a good reads export csv file, tag name, and
+    Gr2lib(GR2LibbyArgs),
+}
 
+#[derive(Parser, Debug, Clone)]
+struct LoginArgs {
+    /// Code from libby app's copy to device
+    #[clap(long)]
+    code: String,
+}
+
+#[derive(Parser, Debug, Clone)]
+struct GR2LibbyArgs {
     #[clap(flatten)]
     libby_user: LibbyUser,
 
@@ -60,6 +73,20 @@ struct CommandArgs {
     #[clap(long)]
     dry_run: bool,
 }
+
+#[derive(Debug, Parser)]
+#[clap(name = "Goodreads shelves to Libby tag")]
+struct CommandArgs {
+    #[clap(short, long, default_value = "info", hide = true, global = true)]
+    log: Vec<Directive>,
+
+    /// Path to save login results json
+    #[clap(long, default_value = "./libby_config.json", global = true)]
+    libby_conf_file: PathBuf,
+
+    #[command(subcommand)]
+    command: Commands,
+}
 fn normalize_title(input: &str) -> String {
     input
         .chars()
@@ -70,9 +97,22 @@ fn normalize_title(input: &str) -> String {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let command_args = CommandArgs::parse();
-    init_logging(command_args.log);
+    let app_args = CommandArgs::parse();
+    init_logging(app_args.log);
 
+    match app_args.command {
+        Commands::Login(login_args) => {
+            let lc = libby::login(login_args.code).await?;
+            tokio::fs::write(&app_args.libby_conf_file, lc.to_json()?).await?
+        }
+        Commands::Gr2lib(command_args) => {
+            gr2libby(command_args).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn gr2libby(command_args: GR2LibbyArgs) -> anyhow::Result<()> {
     let libby_user = if command_args.libby_user.bearer_token.is_empty() {
         libby::prepare_user("libby_config.json", command_args.libby_user).await?
     } else {

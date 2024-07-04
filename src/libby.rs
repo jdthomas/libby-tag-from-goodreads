@@ -2,11 +2,14 @@ use std::collections::HashSet;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use anyhow::bail;
 use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;
 use clap::Parser;
 use itertools::Itertools;
+use reqwest::header::HeaderMap;
+use reqwest::header::HeaderValue;
 use reqwest::IntoUrl;
 use serde::Deserialize;
 use serde::Serialize;
@@ -31,8 +34,13 @@ pub struct LibbyUser {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-struct LibbyConfig {
+pub struct LibbyConfig {
     bearer_token: String,
+}
+impl LibbyConfig {
+    pub fn to_json(&self) -> Result<String> {
+        Ok(serde_json::to_string_pretty(self)?)
+    }
 }
 pub async fn prepare_user(path: &str, mut libby_user: LibbyUser) -> Result<LibbyUser> {
     let config = tokio::fs::read_to_string(path).await?;
@@ -40,9 +48,63 @@ pub async fn prepare_user(path: &str, mut libby_user: LibbyUser) -> Result<Libby
     libby_user.bearer_token = config.bearer_token;
     if libby_user.bearer_token.is_empty() {
         // TODO: prompt to copy from another device
-        anyhow::bail!("empty bearer token");
+        bail!("empty bearer token");
     }
     Ok(libby_user)
+}
+
+#[derive(Debug, Deserialize)]
+struct CodeClone {
+    result: String,
+    #[allow(dead_code)]
+    chip: String,
+}
+
+pub async fn login(code: String) -> Result<LibbyConfig> {
+    // Post to /chip to get identity
+    let client = LibbyClient::reqwest_client()?;
+    let url = "https://sentry.libbyapp.com/chip?c=d%3A16.8.0&s=0";
+    let chip: Chip = client
+        .post(url)
+        .send()
+        .await
+        .context("libby post requst")?
+        .json()
+        .await
+        .context("libby post response")?;
+
+    // post to /code with json like: {"code":"12345678"} to do login
+    let payload = json!({"code": code});
+    let url = "https://sentry.libbyapp.com/chip/clone/code";
+    let code_clone: CodeClone = client
+        .post(url)
+        .bearer_auth(&chip.identity)
+        .json(&payload)
+        .send()
+        .await
+        .context("libby post requst")?
+        .json()
+        .await
+        .context("libby post response")?;
+    debug!("code_clone: {code_clone:?}");
+    if code_clone.result != "cloned" {
+        bail!("Clone unsuccessful: {code_clone:?}");
+    }
+
+    // Post to chip again to get signed in identity
+    let url = "https://sentry.libbyapp.com/chip?c=d%3A16.8.0&s=0";
+    let chip: Chip = client
+        .post(url)
+        .bearer_auth(&chip.identity)
+        .send()
+        .await
+        .context("libby post requst")?
+        .json()
+        .await
+        .context("libby post response")?;
+    Ok(LibbyConfig {
+        bearer_token: chip.identity,
+    })
 }
 
 #[derive(Debug)]
@@ -250,13 +312,24 @@ pub struct LibbyClient {
     chip: Option<Chip>,
 }
 impl LibbyClient {
+    fn reqwest_client() -> Result<reqwest::Client> {
+        let mut headers = HeaderMap::new();
+        headers.insert("Origin", HeaderValue::from_static("https://libbyapp.com"));
+        headers.insert("Referer", HeaderValue::from_static("https://libbyapp.com/"));
+        headers.insert("Sec-Fetch-Dest", HeaderValue::from_static("empty"));
+        headers.insert("Sec-Fetch-Mode", HeaderValue::from_static("cors"));
+        headers.insert("Sec-Fetch-Site", HeaderValue::from_static("same-site"));
+        let client = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
+            .default_headers(headers)
+            .build()?;
+        Ok(client)
+    }
+
+    /// Create a new Libby client
     pub async fn new(libby_user: LibbyUser) -> Result<Self> {
         let mut client = Self {
-            client: reqwest::Client::builder()
-            .user_agent(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/114.0",
-            )
-            .build()?,
+            client: Self::reqwest_client()?,
             libby_user,
             chip: None,
         };
@@ -275,11 +348,6 @@ impl LibbyClient {
         let resp = self
             .client
             .post(url)
-            .header("Origin", "https://libbyapp.com")
-            .header("Referer", "https://libbyapp.com")
-            .header("Sec-Fetch-Dest", "empty")
-            .header("Sec-Fetch-Mode", "cors")
-            .header("Sec-Fetch-Site", "same-site")
             .bearer_auth(self.libby_user.bearer_token.clone())
             .send()
             .await
@@ -419,11 +487,6 @@ impl LibbyClient {
     ) -> Result<T> {
         self.client
             .get(url)
-            .header("Origin", "https://libbyapp.com")
-            .header("Referer", "https://libbyapp.com/")
-            .header("Sec-Fetch-Dest", "empty")
-            .header("Sec-Fetch-Mode", "cors")
-            .header("Sec-Fetch-Site", "same-site")
             .bearer_auth(self.libby_user.bearer_token.clone())
             .body("")
             .send()
@@ -441,11 +504,6 @@ impl LibbyClient {
     ) -> Result<String> {
         self.client
             .post(url)
-            .header("Origin", "https://libbyapp.com")
-            .header("Referer", "https://libbyapp.com/")
-            .header("Sec-Fetch-Dest", "empty")
-            .header("Sec-Fetch-Mode", "cors")
-            .header("Sec-Fetch-Site", "same-site")
             .bearer_auth(self.libby_user.bearer_token.clone())
             .json(&data)
             .send()
@@ -464,11 +522,6 @@ impl LibbyClient {
         let text = self
             .client
             .get(url)
-            .header("Origin", "https://libbyapp.com")
-            .header("Referer", "https://libbyapp.com/")
-            .header("Sec-Fetch-Dest", "empty")
-            .header("Sec-Fetch-Mode", "cors")
-            .header("Sec-Fetch-Site", "same-site")
             .bearer_auth(self.libby_user.bearer_token.clone())
             .send()
             .await
@@ -479,7 +532,7 @@ impl LibbyClient {
         // .await
         // .context("library request parsing")
         debug!("resp text: {:?}", text);
-        Ok(serde_json::from_str(&text).context("library request parsign")?)
+        serde_json::from_str(&text).context("library request parsign")
     }
 }
 

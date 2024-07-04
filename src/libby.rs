@@ -104,6 +104,13 @@ async fn chip(client: &reqwest::Client, identity: &str) -> Result<Chip> {
     Ok(chip)
 }
 
+pub async fn get_cards(libby_conf_file: PathBuf) -> Result<Vec<LibbyCard>> {
+    let client = LibbyClient::reqwest_client()?;
+    let libby_config = LibbyClient::load_config(libby_conf_file).await?;
+    let cards = LibbyClient::get_cards(&client, &libby_config.bearer_token).await?;
+    Ok(cards)
+}
+
 #[derive(Debug)]
 pub struct TagInfo {
     pub uuid: String,
@@ -142,18 +149,18 @@ fn encode_name(name: &str) -> String {
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-struct Library {
-    website_id: String,
-    name: String,
+pub struct Library {
+    pub website_id: String,
+    pub name: String,
 }
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-struct LibbyCard {
-    card_id: String,
-    advantage_key: String,
-    card_name: String,
-    library: Library,
+pub struct LibbyCard {
+    pub card_id: String,
+    pub advantage_key: String,
+    pub card_name: String,
+    pub library: Library,
 }
 
 #[allow(dead_code)]
@@ -315,12 +322,7 @@ pub struct LibbyClient {
 impl LibbyClient {
     /// Create a new Libby client
     pub async fn new(libby_conf_file: PathBuf, card_id: String) -> Result<Self> {
-        let config: LibbyConfig = serde_json::from_str(
-            &tokio::fs::read_to_string(libby_conf_file)
-                .await
-                .context("reading libby config file")?,
-        )
-        .context("parsing libby config")?;
+        let config = Self::load_config(libby_conf_file).await?;
         let client = Self::reqwest_client()?;
         let chip = chip(&client, &config.bearer_token).await?;
         let card = Self::get_library_card(&client, &chip.identity, &card_id).await?;
@@ -330,6 +332,16 @@ impl LibbyClient {
             chip,
             card,
         })
+    }
+
+    async fn load_config(libby_conf_file: PathBuf) -> Result<LibbyConfig> {
+        let config: LibbyConfig = serde_json::from_str(
+            &tokio::fs::read_to_string(libby_conf_file)
+                .await
+                .context("reading libby config file")?,
+        )
+        .context("parsing libby config")?;
+        Ok(config)
     }
 
     /// Helper to create reqwest client with some common defaults
@@ -394,11 +406,7 @@ impl LibbyClient {
             .collect::<Vec<BookInfo>>())
     }
 
-    async fn get_library_card(
-        client: &reqwest::Client,
-        identity: &str,
-        card_id: &str,
-    ) -> Result<LibbyCard> {
+    async fn get_cards(client: &reqwest::Client, identity: &str) -> Result<Vec<LibbyCard>> {
         let url = "https://sentry.libbyapp.com/chip/sync";
 
         let card_sync: LibbyCardSync = client
@@ -416,8 +424,16 @@ impl LibbyClient {
             bail!("Unable to sync card: {card_sync:?}");
         }
 
-        card_sync
-            .cards
+        Ok(card_sync.cards)
+    }
+
+    async fn get_library_card(
+        client: &reqwest::Client,
+        identity: &str,
+        card_id: &str,
+    ) -> Result<LibbyCard> {
+        let cards = Self::get_cards(client, identity).await?;
+        cards
             .into_iter()
             .find(|card| card.card_id == card_id)
             .context("Unable to sync card")

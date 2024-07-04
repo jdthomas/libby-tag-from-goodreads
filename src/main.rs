@@ -25,6 +25,8 @@ enum Commands {
     Login(LoginArgs),
     /// Takes as input a good reads export csv file, tag name, and
     Gr2lib(GR2LibbyArgs),
+    /// List cards that are synced with account
+    ListCards,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -108,12 +110,18 @@ async fn main() -> anyhow::Result<()> {
         Commands::Gr2lib(command_args) => {
             gr2libby(command_args, app_args.libby_conf_file).await?;
         }
+        Commands::ListCards => {
+            let cards = libby::get_cards(app_args.libby_conf_file).await?;
+            println!("Cards: {:#?}", cards);
+        }
     }
     Ok(())
 }
 
 async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyhow::Result<()> {
     let libby_client = LibbyClient::new(libby_conf_file, command_args.card_id).await?;
+
+    eprintln!("Client setup: {}", libby_client);
 
     let tag_info = libby_client
         .get_existing_tag_by_name(&command_args.tag_name)

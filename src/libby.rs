@@ -578,8 +578,11 @@ impl std::fmt::Display for LibbyClient {
 #[cfg(test)]
 mod test {
     use super::*;
-    fn token() -> String {
-        std::env::var("LIBBY_TOKEN").expect("Set LIBBY_TOKEN env var")
+    fn libby_config_path() -> PathBuf {
+        std::env::var("LIBBY_CONFIG").expect("Set LIBBY_CONFIG env var").into()
+    }
+    fn card_id() -> String {
+        std::env::var("LIBBY_CARD_ID").expect("Set LIBBY_CARD_ID env var")
     }
     #[test]
     fn test_encode_name() {
@@ -594,23 +597,18 @@ mod test {
     #[tokio::test]
     #[ignore]
     async fn test_client_create() {
-        let libby_user = LibbyUser {
-            card_id: "10534952".to_owned(),
-            bearer_token: token(),
-            library_advantage_key: None,
-        };
-        let _libby_client = LibbyClient::new(libby_user).await.expect("create client");
+        let libby_conf_file = libby_config_path();
+        let card_id = card_id();
+        let _libby_client = LibbyClient::new(libby_conf_file, card_id).await.expect("create client");
     }
 
     #[test_log::test(tokio::test)]
+    #[ignore]
     async fn test_query_tags() {
         let tag_name = "👨‍🔬testing".to_owned();
-        let libby_user = LibbyUser {
-            card_id: "10534952".to_owned(),
-            bearer_token: token(),
-            library_advantage_key: None,
-        };
-        let libby_client = LibbyClient::new(libby_user).await.expect("create client");
+        let libby_conf_file = libby_config_path();
+        let card_id = card_id();
+        let libby_client = LibbyClient::new(libby_conf_file, card_id).await.expect("create client");
 
         let tag_info = libby_client
             .get_existing_tag_by_name(&tag_name)

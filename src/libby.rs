@@ -70,7 +70,6 @@ pub async fn login(code: String) -> Result<LibbyConfig> {
         .json()
         .await
         .context("libby post response")?;
-    debug!("code_clone: {code_clone:?}");
     if code_clone.result != "cloned" {
         bail!("Clone unsuccessful: {code_clone:?}");
     }
@@ -378,10 +377,7 @@ impl LibbyClient {
             encode_name(&tag_info.name),
             title_id
         );
-        debug!("~~JT~~: url={:?}", url);
-        // {"tag":{"name":"\ud83d\udc68\u200d\ud83d\udd2ctesting","uuid":"3cbf0e3d-b47e-42cf-bd5e-0da8402a273b","createTime":1688410022507,"totalTaggings":589,"behaviors":{}}}
         let data = json!({ "tagging": { "cardId": self.card.card_id, "createTime": now, "titleId": title_id, "websiteId": self.card.library.website_id } });
-        debug!("~~JT~~: {:#?}", data.to_string());
         let response: LibbyResult = self.make_logged_in_libby_post_request(url, &data).await?;
         if response.result != "created" {
             bail!("Unable to tag book: {response:?}");
@@ -397,7 +393,6 @@ impl LibbyClient {
             encode_name(&tag_info.name),
             tag_info.total_tagged,
         );
-        debug!("~~JT~~: URL={url}");
 
         let response = self
             .make_logged_in_libby_get_request::<LibbyTagQuery, _>(url)
@@ -486,19 +481,15 @@ impl LibbyClient {
     }
 
     pub async fn get_existing_tag_by_name(&self, name: &str) -> Result<TagInfo> {
-        debug!("Here");
         let response = self
             .make_libby_library_get_request::<LibbyTagList, _>("https://vandal.libbyapp.com/tags")
             .await?;
-        debug!("Resp: {:#?}", response);
-
         let found = response
             .tags
             .iter()
             .find(|t| t.name == name)
             .cloned()
             .context("Unable to find tag by name");
-        debug!("{:#?}", found);
         found.map(|lt| TagInfo {
             name: lt.name,
             uuid: lt.uuid,
@@ -543,21 +534,15 @@ impl LibbyClient {
         &self,
         url: U,
     ) -> Result<T> {
-        debug!("{:?}", self.chip);
-        let text = self
-            .client
+        self.client
             .get(url)
             .bearer_auth(&self.chip.identity)
             .send()
             .await
             .context("library request")?
-            .text()
-            .await?;
-        // .json::<T>()
-        // .await
-        // .context("library request parsing")
-        debug!("resp text: {:?}", text);
-        serde_json::from_str(&text).context("library request parsign")
+            .json::<T>()
+            .await
+            .context("library request parsing")
     }
 }
 
@@ -579,7 +564,9 @@ impl std::fmt::Display for LibbyClient {
 mod test {
     use super::*;
     fn libby_config_path() -> PathBuf {
-        std::env::var("LIBBY_CONFIG").expect("Set LIBBY_CONFIG env var").into()
+        std::env::var("LIBBY_CONFIG")
+            .expect("Set LIBBY_CONFIG env var")
+            .into()
     }
     fn card_id() -> String {
         std::env::var("LIBBY_CARD_ID").expect("Set LIBBY_CARD_ID env var")
@@ -599,7 +586,9 @@ mod test {
     async fn test_client_create() {
         let libby_conf_file = libby_config_path();
         let card_id = card_id();
-        let _libby_client = LibbyClient::new(libby_conf_file, card_id).await.expect("create client");
+        let _libby_client = LibbyClient::new(libby_conf_file, card_id)
+            .await
+            .expect("create client");
     }
 
     #[test_log::test(tokio::test)]
@@ -608,7 +597,9 @@ mod test {
         let tag_name = "👨‍🔬testing".to_owned();
         let libby_conf_file = libby_config_path();
         let card_id = card_id();
-        let libby_client = LibbyClient::new(libby_conf_file, card_id).await.expect("create client");
+        let libby_client = LibbyClient::new(libby_conf_file, card_id)
+            .await
+            .expect("create client");
 
         let tag_info = libby_client
             .get_existing_tag_by_name(&tag_name)

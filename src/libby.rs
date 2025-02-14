@@ -17,6 +17,10 @@ use serde::Serialize;
 use serde_json::json;
 use tracing::debug;
 
+const C: &str = "d:18.4.0";
+const V: &str = "eb643ccd";
+const S: &str = "0";
+
 #[derive(Clone, Debug, Parser)]
 pub struct LibbyUser {
     /// Card id as known by libbyapp
@@ -47,7 +51,7 @@ struct CodeClone {
 pub async fn login(code: String) -> Result<LibbyConfig> {
     // Post to /chip to get identity
     let client = LibbyClient::reqwest_client()?;
-    let url = "https://sentry.libbyapp.com/chip?c=d%3A16.8.0&s=0";
+    let url = format!("https://sentry.libbyapp.com/chip?c={C}&s={S}&v={V}");
     let chip: Chip = client
         .post(url)
         .send()
@@ -75,7 +79,7 @@ pub async fn login(code: String) -> Result<LibbyConfig> {
     }
 
     // Post to chip again to get signed in identity
-    let url = "https://sentry.libbyapp.com/chip?c=d%3A16.8.0&s=0";
+    let url = format!("https://sentry.libbyapp.com/chip?c={C}&s={S}&v={V}");
     let chip: Chip = client
         .post(url)
         .bearer_auth(&chip.identity)
@@ -89,17 +93,20 @@ pub async fn login(code: String) -> Result<LibbyConfig> {
         bearer_token: chip.identity,
     })
 }
+
 async fn chip(client: &reqwest::Client, identity: &str) -> Result<Chip> {
-    let url = "https://sentry.libbyapp.com/chip?c=d%3A16.8.0&s=0";
-    let chip: Chip = client
+    let url = format!("https://sentry.libbyapp.com/chip?c={C}&s={S}&v={V}");
+    let chip_resp = client
         .post(url)
         .bearer_auth(identity)
         .send()
         .await
         .context("libby post requst")?
-        .json()
+        .text()
         .await
-        .context("libby post response")?;
+        .context("get resp")?;
+    debug!("Resp: '{}'", chip_resp);
+    let chip: Chip = serde_json::from_str(&chip_resp).context("libby post response")?;
     Ok(chip)
 }
 
@@ -328,10 +335,14 @@ pub struct LibbyClient {
 impl LibbyClient {
     /// Create a new Libby client
     pub async fn new(libby_conf_file: PathBuf, card_id: String) -> Result<Self> {
-        let config = Self::load_config(libby_conf_file).await?;
+        let config = Self::load_config(libby_conf_file)
+            .await
+            .context("load config")?;
         let client = Self::reqwest_client()?;
-        let chip = chip(&client, &config.bearer_token).await?;
-        let card = Self::get_library_card(&client, &chip.identity, &card_id).await?;
+        let chip = chip(&client, &config.bearer_token).await.context("Chip")?;
+        let card = Self::get_library_card(&client, &chip.identity, &card_id)
+            .await
+            .context("get_library_card")?;
         Ok(Self {
             client,
             config,
@@ -358,6 +369,7 @@ impl LibbyClient {
         headers.insert("Sec-Fetch-Dest", HeaderValue::from_static("empty"));
         headers.insert("Sec-Fetch-Mode", HeaderValue::from_static("cors"));
         headers.insert("Sec-Fetch-Site", HeaderValue::from_static("same-site"));
+        headers.insert("Accept", HeaderValue::from_static("application/json"));
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
             .default_headers(headers)

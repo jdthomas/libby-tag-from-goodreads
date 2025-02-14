@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use anyhow::Context;
 use clap::Parser;
 use clap::Subcommand;
 use colored::Colorize;
@@ -116,7 +117,9 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyhow::Result<()> {
-    let libby_client = LibbyClient::new(libby_conf_file, command_args.card_id).await?;
+    let libby_client = LibbyClient::new(libby_conf_file, command_args.card_id)
+        .await
+        .context("client creation")?;
 
     eprintln!("Client setup: {}", libby_client);
     eprintln!(
@@ -133,15 +136,20 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
 
     let tag_info = libby_client
         .get_existing_tag_by_name(&command_args.tag_name)
-        .await?;
+        .await
+        .context("get_existing_tag_by_name")?;
 
     let goodread_books = get_book_titles_from_goodreads_shelf(
         command_args.goodreads_export_csv,
         &command_args.goodreads_shelf,
     )
-    .await?;
+    .await
+    .context("get_book_titles_from_goodreads_shelf")?;
 
-    let existing_books = libby_client.get_books_for_tag(&tag_info).await?;
+    let existing_books = libby_client
+        .get_books_for_tag(&tag_info)
+        .await
+        .context("get_books_for_tag")?;
     let existing_book_titles: HashSet<String> = existing_books
         .iter()
         .map(|b| normalize_title(&b.title))

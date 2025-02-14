@@ -7,16 +7,13 @@ use colored::Colorize;
 use futures::StreamExt;
 use tracing::debug;
 use tracing::info;
-use tracing_subscriber::filter::Directive;
 
 pub mod goodreads;
 pub mod libby;
-pub mod logging;
 
 use goodreads::get_book_titles_from_goodreads_shelf;
 use libby::BookType;
 use libby::LibbyClient;
-use logging::init_logging;
 
 #[derive(Subcommand, Debug)]
 #[clap(name = "Goodreads shelves to Libby tag")]
@@ -79,8 +76,8 @@ struct GR2LibbyArgs {
 #[derive(Debug, Parser)]
 #[clap(name = "Goodreads shelves to Libby tag")]
 struct CommandArgs {
-    #[clap(short, long, default_value = "info", hide = true, global = true)]
-    log: Vec<Directive>,
+    #[clap(flatten)]
+    log_opts: jt_init_logging::LogOptsClap,
 
     /// Path to save login results json
     #[clap(long, default_value = "./libby_config.json", global = true)]
@@ -100,7 +97,7 @@ fn normalize_title(input: &str) -> String {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let app_args = CommandArgs::parse();
-    init_logging(app_args.log);
+    jt_init_logging::init_logging(&app_args.log_opts.into());
 
     match app_args.command {
         Commands::Login(login_args) => {

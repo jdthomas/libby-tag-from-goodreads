@@ -280,7 +280,7 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
                             );
                         }
                         TagAction::Remove => {
-                            println!("{:20} '{}'", "Removing".red(), book_info.title);
+                            println!("{:20} '{}'", "Removing".green(), book_info.title);
                             if !command_args.dry_run {
                                 libby_client
                                     .untag_book_by_overdrive_id(&tag_info, &book_info.libby_id)

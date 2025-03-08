@@ -18,5 +18,5 @@ run.sh
 run_log.txt
 *.csv
 perf.data
-libby_config.json
-
+libby_config.json*
+.DS_Store

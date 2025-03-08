@@ -12,6 +12,7 @@ use tracing::info;
 pub mod goodreads;
 pub mod libby;
 
+use goodreads::get_book_titles_from_goodreads;
 use goodreads::get_book_titles_from_goodreads_shelf;
 use libby::BookType;
 use libby::LibbyClient;
@@ -60,6 +61,11 @@ struct GR2LibbyArgs {
     /// The name of the shelf in good reads to filter for
     #[clap(long, default_value = "to-read")]
     goodreads_shelf: String,
+
+    /// The name of the shelf in good reads to filter out. If set will remove
+    /// tags for books matching this shelf.
+    #[clap(long)]
+    goodreads_remove_shelf: Option<String>,
 
     /// The type of book (audiobook or ebook) in Libby to tag
     #[clap(long, default_value = "audiobook")]
@@ -116,6 +122,11 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+enum TagAction {
+    Add,
+    Remove,
+}
+
 async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyhow::Result<()> {
     let libby_client = LibbyClient::new(libby_conf_file, command_args.card_id)
         .await
@@ -123,9 +134,9 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
 
     eprintln!("Client setup: {}", libby_client);
     eprintln!(
-        "Will {} tag books (of type {}) from goodreads shelf {}  with tag {}",
+        "Will {}tag books (of type {}) from goodreads shelf '{}' with tag '{}'",
         if command_args.dry_run {
-            "(dry-run)"
+            "(dry-run) "
         } else {
             ""
         },
@@ -133,18 +144,38 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
         command_args.goodreads_shelf,
         command_args.tag_name,
     );
+    if let Some(ref remove_shelf) = &command_args.goodreads_remove_shelf {
+        eprint!(
+            "Will remove tag '{}' from books on the '{}' shelf",
+            command_args.tag_name, remove_shelf
+        );
+    }
 
     let tag_info = libby_client
         .get_existing_tag_by_name(&command_args.tag_name)
         .await
         .context("get_existing_tag_by_name")?;
 
-    let goodread_books = get_book_titles_from_goodreads_shelf(
-        command_args.goodreads_export_csv,
-        &command_args.goodreads_shelf,
-    )
-    .await
-    .context("get_book_titles_from_goodreads_shelf")?;
+    let mut all_goodread_books = get_book_titles_from_goodreads(command_args.goodreads_export_csv)
+        .await
+        .context("get_book_titles_from_goodreads_shelf")?;
+
+    let goodread_books = all_goodread_books
+        .remove(&command_args.goodreads_shelf)
+        .with_context(|| {
+            format!(
+                "shelf '{}' not found in goodreads export",
+                command_args.goodreads_shelf
+            )
+        })?;
+    let goodreads_remove_books =
+        if let Some(ref remove_shelf) = &command_args.goodreads_remove_shelf {
+            all_goodread_books.remove(remove_shelf).with_context(|| {
+                format!("shelf '{}' not found in goodreads export", remove_shelf)
+            })?
+        } else {
+            vec![]
+        };
 
     let existing_books = libby_client
         .get_books_for_tag(&tag_info)
@@ -203,45 +234,81 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
                     true
                 }
             })
-            .map(|goodreads::BookInfo { title, authors, .. }| async move {
-                let found_book = lc
-                    .search_for_book_by_title(
-                        libby::SearchOptions {
-                            book_type,
-                            deep_search,
-                            max_results: 24,
-                        },
-                        title,
-                        Some(authors),
-                    )
-                    .await;
-                (title, found_book)
-            }),
+            .map(|book| (TagAction::Add, book))
+            .chain(
+                goodreads_remove_books
+                    .iter()
+                    .filter(|goodreads::BookInfo { title, .. }| {
+                        // Only keep already tagged books
+                        existing_book_titles.contains(&normalize_title(title))
+                    })
+                    .map(|book| (TagAction::Remove, book)),
+            ),
+    )
+    .map(
+        |(action, goodreads::BookInfo { title, authors, .. })| async move {
+            let found_book = lc
+                .search_for_book_by_title(
+                    libby::SearchOptions {
+                        book_type,
+                        deep_search,
+                        max_results: 24,
+                    },
+                    title,
+                    Some(authors),
+                )
+                .await;
+            (action, title, found_book)
+        },
     )
     .buffer_unordered(25);
     let mut existing_ct = 0;
     let mut newly_tagged_ct = 0;
     let mut not_found_ct = 0;
 
-    while let Some((title, found_book)) = found_books.next().await {
+    while let Some((action, title, found_book)) = found_books.next().await {
         match found_book {
             Ok(book_info) => {
                 if existing_book_ids.contains(&book_info.libby_id) {
-                    existing_ct += 1;
-                    println!(
-                        "{:20} '{}'",
-                        "Already tagged (id)".yellow(),
-                        book_info.title
-                    );
-                } else {
-                    newly_tagged_ct += 1;
-                    println!("{:20}'{}'", "Tagging".green(), book_info.title);
-                    if !command_args.dry_run {
-                        libby_client
-                            .tag_book_by_overdrive_id(&tag_info, &book_info.libby_id)
-                            .await?;
+                    match action {
+                        TagAction::Add => {
+                            existing_ct += 1;
+                            println!(
+                                "{:20} '{}'",
+                                "Already tagged (id)".yellow(),
+                                book_info.title
+                            );
+                        }
+                        TagAction::Remove => {
+                            println!("{:20} '{}'", "Removing".red(), book_info.title);
+                            if !command_args.dry_run {
+                                libby_client
+                                    .untag_book_by_overdrive_id(&tag_info, &book_info.libby_id)
+                                    .await?;
+                            }
+                            existing_book_ids.remove(&book_info.libby_id);
+                        }
                     }
-                    existing_book_ids.insert(book_info.libby_id);
+                } else {
+                    match action {
+                        TagAction::Add => {
+                            newly_tagged_ct += 1;
+                            println!("{:20}'{}'", "Tagging".green(), book_info.title);
+                            if !command_args.dry_run {
+                                libby_client
+                                    .tag_book_by_overdrive_id(&tag_info, &book_info.libby_id)
+                                    .await?;
+                            }
+                            existing_book_ids.insert(book_info.libby_id);
+                        }
+                        TagAction::Remove => {
+                            println!(
+                                "{:20} '{}'",
+                                "Not tagged, skipping remove(id)".bright_yellow(),
+                                book_info.title
+                            );
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -250,6 +317,7 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
             }
         }
     }
+
     println!(
         "Summary: Tagged {}, Existing {}, Not Found {}.",
         newly_tagged_ct, existing_ct, not_found_ct

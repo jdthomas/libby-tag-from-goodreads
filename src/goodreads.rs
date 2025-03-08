@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::Result;
+use itertools::Itertools;
 use serde::Deserialize;
 use tracing::debug;
 
@@ -11,6 +12,7 @@ pub struct BookInfo {
     pub author: String,
     pub isbn: String,
     pub authors: HashSet<String>,
+    shelf: String,
 }
 impl From<GoodReadsExportRecord> for BookInfo {
     fn from(other: GoodReadsExportRecord) -> Self {
@@ -26,6 +28,7 @@ impl From<GoodReadsExportRecord> for BookInfo {
             author: other.author,
             isbn: other.ISBN,
             authors,
+            shelf: other.exclusive_shelf.clone(),
         }
     }
 }
@@ -80,6 +83,7 @@ struct GoodReadsExportRecord {
     #[serde(alias = "Owned Copies")]
     owned_copies: i64,
 }
+
 pub async fn get_book_titles_from_goodreads_shelf(
     file_path: PathBuf,
     shelf_name: &str,
@@ -96,4 +100,19 @@ pub async fn get_book_titles_from_goodreads_shelf(
             })
         })
         .collect())
+}
+
+pub async fn get_book_titles_from_goodreads(
+    file_path: PathBuf,
+) -> Result<HashMap<String, Vec<BookInfo>>> {
+    let mut rdr = csv::Reader::from_path(file_path)?;
+    debug!("heads={:?}", rdr.headers()?);
+    Ok(rdr
+        .deserialize()
+        .filter_map(|r| r.ok()) // TODO: Fail here instead of skipping deserilization problems?
+        .map(|record: GoodReadsExportRecord| {
+            debug!("{:#?}", record);
+            record.into()
+        })
+        .into_group_map_by(|record: &BookInfo| record.shelf.clone()))
 }

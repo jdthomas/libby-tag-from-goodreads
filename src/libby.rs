@@ -56,7 +56,7 @@ pub async fn login(code: String) -> Result<LibbyConfig> {
         .post(url)
         .send()
         .await
-        .context("libby post requst")?
+        .context("libby post request")?
         .json()
         .await
         .context("libby post response")?;
@@ -70,7 +70,7 @@ pub async fn login(code: String) -> Result<LibbyConfig> {
         .json(&payload)
         .send()
         .await
-        .context("libby post requst")?
+        .context("libby post request")?
         .json()
         .await
         .context("libby post response")?;
@@ -85,7 +85,7 @@ pub async fn login(code: String) -> Result<LibbyConfig> {
         .bearer_auth(&chip.identity)
         .send()
         .await
-        .context("libby post requst")?
+        .context("libby post request")?
         .json()
         .await
         .context("libby post response")?;
@@ -101,7 +101,7 @@ async fn chip(client: &reqwest::Client, identity: &str) -> Result<Chip> {
         .bearer_auth(identity)
         .send()
         .await
-        .context("libby post requst")?
+        .context("libby post request")?
         .text()
         .await
         .context("get resp")?;
@@ -397,6 +397,24 @@ impl LibbyClient {
         debug!("{:#?}", response);
         Ok(())
     }
+    pub async fn untag_book_by_overdrive_id(
+        &self,
+        tag_info: &TagInfo,
+        title_id: &str,
+    ) -> Result<()> {
+        let url = format!(
+            "https://vandal.libbyapp.com/tag/{}/{}/tagging/{}?enc=1",
+            tag_info.uuid,
+            encode_name(&tag_info.name),
+            title_id
+        );
+        let response: LibbyResult = self.make_logged_in_libby_delete_request(url).await?;
+        if response.result != "taggings_destroyed" {
+            bail!("Unable to untag book: {response:?}");
+        }
+        debug!("{:#?}", response);
+        Ok(())
+    }
 
     pub async fn get_books_for_tag(&self, tag_info: &TagInfo) -> Result<Vec<BookInfo>> {
         let url = format!(
@@ -536,7 +554,22 @@ impl LibbyClient {
             .json(&data)
             .send()
             .await
-            .context("libby post requst")?
+            .context("libby post request")?
+            .json::<T>()
+            .await
+            .context("libby post response")
+    }
+
+    async fn make_logged_in_libby_delete_request<T: serde::de::DeserializeOwned, U: IntoUrl>(
+        &self,
+        url: U,
+    ) -> Result<T> {
+        self.client
+            .delete(url)
+            .bearer_auth(&self.chip.identity)
+            .send()
+            .await
+            .context("libby post request")?
             .json::<T>()
             .await
             .context("libby post response")

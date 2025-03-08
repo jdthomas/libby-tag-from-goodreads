@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Goodreads To Libby Tagger (WASM)</title>
+</head>
+
+<body>
+    <h1>Goodreads To Libby Tagger</h1>
+
+    <h2>Upload goodreads export csv</h2>
+    <a href="https://help.goodreads.com/s/article/How-do-I-import-or-export-my-books-1553870934590"> export
+        instructions</a>
+    <br />
+
+    <form id="wasm-form">
+        <input type="file" id="file-input" name="file_input">
+        <input type="hidden" id="raw-csv-content" name="raw_csv_content">
+        <pre id="csv-output"></pre>
+
+        <label for="dry-run">Dry Run:</label>
+        <input type="checkbox" id="dry-run" name="dry_run">
+        <br>
+
+        <label for="include-unavailable">Include Unavailable:</label>
+        <input type="checkbox" id="include-unavailable" name="include_unavailable">
+        <br>
+
+        <label for="goodreads-shelf">Goodreads Shelf:</label>
+        <select id="goodreads-shelf" name="goodreads_shelf" required>
+            <option value="to-read" selected>to-read</option>
+            <option value="read">read</option>
+        </select>
+        <br>
+
+        <label for="goodreads-remove-shelf">Goodreads Remove Shelf:</label>
+        <select id="goodreads-remove-shelf" name="goodreads_remove_shelf">
+            <option value="">None</option>
+            <option value="to-read">to-read</option>
+            <option value="read">read</option>
+        </select>
+        <br>
+
+        <label for="libby-auth">Libby Auth:</label>
+        <input type="text" id="libby-auth" name="libby_auth">
+        <br>
+
+        <label for="card-id">Card ID:</label>
+        <input type="text" id="card-id" name="card_id">
+        <br>
+
+        <label for="tag-name">Tag Name:</label>
+        <input type="text" id="tag-name" name="tag_name">
+        <br>
+
+        <label for="book-type">Book Type:</label>
+        <select id="book-type" name="book_type">
+            <option value="Audiobook">Audiobook</option>
+            <option value="EBook">EBook</option>
+        </select>
+        <br>
+
+        <button type="submit">Submit</button>
+
+        <pre id="fetch-output"></pre>
+
+        <script type="module">
+            import init, { process_csv, fetch_data } from "./pkg/gr2libby.js";
+
+            async function run() {
+                await init(); // Load WASM
+                window.__RUST_BACKTRACE__ = 1;
+
+                // Restore saved values from localStorage
+                const libbyAuthInput = document.getElementById("libby-auth");
+                const tagNameInput = document.getElementById("tag-name");
+                const cardIdInput = document.getElementById("card-id");
+
+                libbyAuthInput.value = localStorage.getItem("libby_auth") || "";
+                tagNameInput.value = localStorage.getItem("tag_name") || "";
+                cardIdInput.value = localStorage.getItem("card_id") || "";
+
+                // Save values to localStorage when they change
+                libbyAuthInput.addEventListener("change", (event) => {
+                    localStorage.setItem("libby_auth", event.target.value);
+                });
+                tagNameInput.addEventListener("change", (event) => {
+                    localStorage.setItem("tag_name", event.target.value);
+                });
+                cardIdInput.addEventListener("change", (event) => {
+                    localStorage.setItem("card_id", event.target.value);
+                });
+
+                // Function to process file
+                async function processFile(file) {
+                    if (!file) return;
+
+                    let reader = new FileReader();
+                    reader.onload = async () => {
+                        let csv_content = reader.result;
+                        document.getElementById("raw-csv-content").value = csv_content;
+                        let result = await process_csv(csv_content);
+                        document.getElementById("csv-output").textContent = result;
+                    };
+                    reader.readAsText(file);
+                }
+
+                // Handle CSV File Upload
+                const fileInput = document.getElementById("file-input");
+                fileInput.addEventListener("change", async (event) => {
+                    await processFile(event.target.files[0]);
+                });
+
+                // Process file if already selected on page load
+                if (fileInput.files.length > 0) {
+                    await processFile(fileInput.files[0]);
+                }
+
+                // Handle Form Submission
+                document.getElementById("wasm-form").addEventListener("submit", async (event) => {
+                    event.preventDefault();
+                    try {
+                        const formData = new FormData(event.target);
+                        const wasmArgs = {
+                            dry_run: formData.has('dry_run'),
+                            include_unavailable: formData.has('include_unavailable'),
+                            goodreads_shelf: formData.get('goodreads_shelf'),
+                            goodreads_remove_shelf: formData.get('goodreads-remove-shelf') || null,
+                            libby_auth: formData.get('libby_auth'),
+                            card_id: formData.get('card_id') || "",
+                            tag_name: formData.get('tag_name'),
+                            book_type: formData.get('book_type'),
+                            good_reads_export_csv: document.getElementById("raw-csv-content").value
+                        };
+                        console.log(wasmArgs);
+                        let result = await fetch_data(wasmArgs);
+                        document.getElementById("fetch-output").textContent = JSON.stringify(result, null, 2);
+                    } catch (error) {
+                        document.getElementById("fetch-output").textContent = "Error fetching data: " + error;
+                    }
+                });
+            }
+
+            run();
+        </script>
+</body>
+
+</html>

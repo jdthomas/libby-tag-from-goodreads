@@ -13,7 +13,6 @@ pub mod goodreads;
 pub mod libby;
 
 use goodreads::get_book_titles_from_goodreads;
-use goodreads::get_book_titles_from_goodreads_shelf;
 use libby::BookType;
 use libby::LibbyClient;
 
@@ -83,9 +82,8 @@ struct GR2LibbyArgs {
 #[derive(Debug, Parser)]
 #[clap(name = "Goodreads shelves to Libby tag")]
 struct CommandArgs {
-    #[clap(flatten)]
-    log_opts: jt_init_logging::LogOptsClap,
-
+    // #[clap(flatten)]
+    // log_opts: jt_init_logging::LogOptsClap,
     /// Path to save login results json
     #[clap(long, default_value = "./libby_config.json", global = true)]
     libby_conf_file: PathBuf,
@@ -101,25 +99,72 @@ fn normalize_title(input: &str) -> String {
         .to_lowercase()
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let app_args = CommandArgs::parse();
-    jt_init_logging::init_logging(&app_args.log_opts.into());
+// #[tokio::main]
+// async fn main() -> anyhow::Result<()> {
+//     let app_args = CommandArgs::parse();
+//     // jt_init_logging::init_logging(&app_args.log_opts.into());
 
-    match app_args.command {
-        Commands::Login(login_args) => {
-            let lc = libby::login(login_args.code).await?;
-            tokio::fs::write(&app_args.libby_conf_file, lc.to_json()?).await?
-        }
-        Commands::Gr2lib(command_args) => {
-            gr2libby(command_args, app_args.libby_conf_file).await?;
-        }
-        Commands::ListCards => {
-            let cards = libby::get_cards(app_args.libby_conf_file).await?;
-            println!("Cards: {:#?}", cards);
-        }
-    }
-    Ok(())
+//     match app_args.command {
+//         Commands::Login(login_args) => {
+//             let lc = libby::login(login_args.code).await?;
+//             tokio::fs::write(&app_args.libby_conf_file, lc.to_json()?).await?
+//         }
+//         Commands::Gr2lib(command_args) => {
+//             gr2libby(command_args, app_args.libby_conf_file).await?;
+//         }
+//         Commands::ListCards => {
+//             let cards = libby::get_cards(app_args.libby_conf_file).await?;
+//             println!("Cards: {:#?}", cards);
+//         }
+//     }
+//     Ok(())
+// }
+
+use js_sys::Promise;
+use serde::Deserialize;
+use serde::Serialize;
+use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::JsValue;
+use wasm_bindgen_futures::future_to_promise;
+
+#[wasm_bindgen(start)]
+pub fn main() {
+    console_error_panic_hook::set_once(); // Enable better panic messages
+}
+
+#[wasm_bindgen]
+pub fn process_csv(content: &str) -> Result<JsValue, JsValue> {
+    let books =
+        get_book_titles_from_goodreads(content).map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+    serde_wasm_bindgen::to_value(&books).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+#[wasm_bindgen]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct WasmArgs {
+    dry_run: bool,
+    include_unavailable: bool,
+    goodreads_shelf: String,
+    goodreads_remove_shelf: Option<String>,
+    libby_auth: String,
+    card_id: String,
+    tag_name: String,
+    book_type: BookType,
+    // book_type: String,
+    good_reads_export_csv: String,
+}
+
+#[wasm_bindgen]
+pub fn fetch_data(args: JsValue) -> Promise {
+    future_to_promise(async move {
+        let args: WasmArgs = serde_wasm_bindgen::from_value(args)?;
+        gr2libby(args)
+            .await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+
+        Ok(JsValue::from_str("done"))
+    })
 }
 
 enum TagAction {
@@ -127,55 +172,49 @@ enum TagAction {
     Remove,
 }
 
-async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyhow::Result<()> {
-    let libby_client = LibbyClient::new(libby_conf_file, command_args.card_id)
+async fn gr2libby(wasm_args: WasmArgs) -> anyhow::Result<()> {
+    let libby_client = LibbyClient::new_with_token(wasm_args.libby_auth, wasm_args.card_id)
         .await
         .context("client creation")?;
 
     eprintln!("Client setup: {}", libby_client);
     eprintln!(
         "Will {}tag books (of type {}) from goodreads shelf '{}' with tag '{}'",
-        if command_args.dry_run {
-            "(dry-run) "
-        } else {
-            ""
-        },
-        command_args.book_type,
-        command_args.goodreads_shelf,
-        command_args.tag_name,
+        if wasm_args.dry_run { "(dry-run) " } else { "" },
+        wasm_args.book_type,
+        wasm_args.goodreads_shelf,
+        wasm_args.tag_name,
     );
-    if let Some(ref remove_shelf) = &command_args.goodreads_remove_shelf {
+    if let Some(ref remove_shelf) = &wasm_args.goodreads_remove_shelf {
         eprint!(
             "Will remove tag '{}' from books on the '{}' shelf",
-            command_args.tag_name, remove_shelf
+            wasm_args.tag_name, remove_shelf
         );
     }
 
     let tag_info = libby_client
-        .get_existing_tag_by_name(&command_args.tag_name)
+        .get_existing_tag_by_name(&wasm_args.tag_name)
         .await
         .context("get_existing_tag_by_name")?;
 
-    let mut all_goodread_books = get_book_titles_from_goodreads(command_args.goodreads_export_csv)
-        .await
+    let mut all_goodread_books = get_book_titles_from_goodreads(&wasm_args.good_reads_export_csv)
         .context("get_book_titles_from_goodreads_shelf")?;
 
     let goodread_books = all_goodread_books
-        .remove(&command_args.goodreads_shelf)
+        .remove(&wasm_args.goodreads_shelf)
         .with_context(|| {
             format!(
                 "shelf '{}' not found in goodreads export",
-                command_args.goodreads_shelf
+                wasm_args.goodreads_shelf
             )
         })?;
-    let goodreads_remove_books =
-        if let Some(ref remove_shelf) = &command_args.goodreads_remove_shelf {
-            all_goodread_books.remove(remove_shelf).with_context(|| {
-                format!("shelf '{}' not found in goodreads export", remove_shelf)
-            })?
-        } else {
-            vec![]
-        };
+    let goodreads_remove_books = if let Some(ref remove_shelf) = &wasm_args.goodreads_remove_shelf {
+        all_goodread_books
+            .remove(remove_shelf)
+            .with_context(|| format!("shelf '{}' not found in goodreads export", remove_shelf))?
+    } else {
+        vec![]
+    };
 
     let existing_books = libby_client
         .get_books_for_tag(&tag_info)
@@ -193,31 +232,31 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
         existing_book_titles.len()
     );
 
-    let goodread_books = if let Some(intersect_with_goodreads_export_csv) =
-        command_args.intersect_with_goodreads_export_csv
-    {
-        let intersect_book_titles: HashSet<_> = get_book_titles_from_goodreads_shelf(
-            intersect_with_goodreads_export_csv,
-            &command_args.goodreads_shelf,
-        )
-        .await?
-        .drain(..)
-        .map(|bi| bi.title)
-        .collect();
-        // Just filter by title
-        goodread_books
-            .into_iter()
-            .filter(|bi| intersect_book_titles.contains(&bi.title))
-            .collect()
-    } else {
-        goodread_books
-    };
+    // let goodread_books = if let Some(intersect_with_goodreads_export_csv) =
+    //     command_args.intersect_with_goodreads_export_csv
+    // {
+    //     let intersect_book_titles: HashSet<_> = get_book_titles_from_goodreads_shelf(
+    //         intersect_with_goodreads_export_csv,
+    //         &command_args.goodreads_shelf,
+    //     )
+    //     .await?
+    //     .drain(..)
+    //     .map(|bi| bi.title)
+    //     .collect();
+    //     // Just filter by title
+    //     goodread_books
+    //         .into_iter()
+    //         .filter(|bi| intersect_book_titles.contains(&bi.title))
+    //         .collect()
+    // } else {
+    //     goodread_books
+    // };
 
     debug!("books: {:#?}", goodread_books);
 
     let lc = &libby_client;
-    let book_type = command_args.book_type;
-    let deep_search = command_args.include_unavailable;
+    let book_type = wasm_args.book_type;
+    let deep_search = wasm_args.include_unavailable;
 
     let mut found_books = futures::stream::iter(
         goodread_books
@@ -281,7 +320,7 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
                         }
                         TagAction::Remove => {
                             println!("{:20} '{}'", "Removing".green(), book_info.title);
-                            if !command_args.dry_run {
+                            if !wasm_args.dry_run {
                                 libby_client
                                     .untag_book_by_overdrive_id(&tag_info, &book_info.libby_id)
                                     .await?;
@@ -294,7 +333,7 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
                         TagAction::Add => {
                             newly_tagged_ct += 1;
                             println!("{:20}'{}'", "Tagging".green(), book_info.title);
-                            if !command_args.dry_run {
+                            if !wasm_args.dry_run {
                                 libby_client
                                     .tag_book_by_overdrive_id(&tag_info, &book_info.libby_id)
                                     .await?;

@@ -12,6 +12,7 @@ use itertools::Itertools;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use reqwest::IntoUrl;
+use reqwest_wasm as reqwest;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
@@ -31,7 +32,7 @@ pub struct LibbyUser {
     pub library_advantage_key: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 pub struct LibbyConfig {
     bearer_token: String,
 }
@@ -124,14 +125,14 @@ pub struct TagInfo {
     pub total_tagged: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BookInfo {
     pub libby_id: String,
     pub title: String,
 }
 
 #[allow(dead_code)]
-#[derive(clap::ValueEnum, Clone, Debug, Copy)]
+#[derive(clap::ValueEnum, Clone, Debug, Copy, Deserialize, Serialize)]
 pub enum BookType {
     Audiobook,
     Ebook,
@@ -159,6 +160,14 @@ pub struct Library {
     pub website_id: String,
     pub name: String,
 }
+impl Default for Library {
+    fn default() -> Self {
+        Self {
+            website_id: "kcls".to_string(),
+            name: "kcls".to_string(),
+        }
+    }
+}
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -167,6 +176,17 @@ pub struct LibbyCard {
     pub advantage_key: String,
     pub card_name: String,
     pub library: Library,
+}
+
+impl Default for LibbyCard {
+    fn default() -> Self {
+        Self {
+            card_id: "123".to_string(),
+            advantage_key: "kcls".to_string(),
+            card_name: "123@kcls".to_string(),
+            library: Library::default(),
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -316,7 +336,7 @@ pub struct SearchOptions {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Chip {
     chip: Option<String>,
@@ -350,15 +370,41 @@ impl LibbyClient {
             card,
         })
     }
+    pub async fn new_with_token(token: String, card_id: String) -> Result<Self> {
+        let config = LibbyConfig {
+            bearer_token: token,
+        };
+        let client = Self::reqwest_client()?;
+        let chip = chip(&client, &config.bearer_token).await.context("Chip")?;
+        let card = Self::get_library_card(&client, &chip.identity, &card_id)
+            .await
+            .context("get_library_card")?;
+        Ok(Self {
+            client,
+            config,
+            chip,
+            card,
+        })
+    }
+    pub async fn new_logged_out() -> Result<Self> {
+        let client = Self::reqwest_client()?;
+        Ok(Self {
+            client,
+            config: LibbyConfig::default(),
+            chip: Chip::default(),
+            card: LibbyCard::default(),
+        })
+    }
 
     async fn load_config(libby_conf_file: PathBuf) -> Result<LibbyConfig> {
-        let config: LibbyConfig = serde_json::from_str(
-            &tokio::fs::read_to_string(libby_conf_file)
-                .await
-                .context("reading libby config file")?,
-        )
-        .context("parsing libby config")?;
-        Ok(config)
+        // let config: LibbyConfig = serde_json::from_str(
+        //     &tokio::fs::read_to_string(libby_conf_file)
+        //         .await
+        //         .context("reading libby config file")?,
+        // )
+        // .context("parsing libby config")?;
+        // Ok(config)
+        Ok(LibbyConfig::default())
     }
 
     /// Helper to create reqwest client with some common defaults
@@ -371,7 +417,7 @@ impl LibbyClient {
         headers.insert("Sec-Fetch-Site", HeaderValue::from_static("same-site"));
         headers.insert("Accept", HeaderValue::from_static("application/json"));
         let client = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
+            // .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
             .default_headers(headers)
             .build()?;
         Ok(client)

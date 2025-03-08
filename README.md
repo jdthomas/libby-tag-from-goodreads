@@ -9,3 +9,23 @@ Simple script to take a shelf from a [Goodreads](https://goodreads.com) export a
 5. run the script, e.g. `gr2libby gr2lib --card-id $LIBRARY_CARD_ID_FROM_STEP_4 --tag "🎧" --book-type audiobook --goodreads-export-csv $CSV_EXPORT_FROM_STEP_1 --goodreads-shelf "to-read"`
 6. ...
 7. Profit
+
+
+## Wasm
+
+Bummer, won't work due to CORS: `Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource at https://sentry.libbyapp.com/chip?c=d:18.4.0&s=0&v=eb643ccd. (Reason: CORS header ‘Access-Control-Allow-Origin’ missing). Status code: 200`
+
+### Tooling to try this:
+```
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli
+cargo install wasm-pack
+```
+### Building / running
+```
+# build the project:
+wasm-pack build --target web --dev
+# Start a quick server:
+python3 -m http.server 8000
+```
+

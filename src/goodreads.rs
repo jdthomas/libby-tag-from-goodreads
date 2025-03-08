@@ -5,9 +5,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 use itertools::Itertools;
 use serde::Deserialize;
+use serde::Serialize;
 use tracing::debug;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BookInfo {
     pub title: String,
     pub author: String,
@@ -15,6 +16,7 @@ pub struct BookInfo {
     pub authors: HashSet<String>,
     shelf: String,
 }
+
 impl From<GoodReadsExportRecord> for BookInfo {
     fn from(other: GoodReadsExportRecord) -> Self {
         let authors = other
@@ -103,10 +105,8 @@ pub async fn get_book_titles_from_goodreads_shelf(
         .collect())
 }
 
-pub async fn get_book_titles_from_goodreads(
-    file_path: PathBuf,
-) -> Result<HashMap<String, Vec<BookInfo>>> {
-    let mut rdr = csv::Reader::from_path(file_path)?;
+pub fn get_book_titles_from_goodreads(content: &str) -> Result<HashMap<String, Vec<BookInfo>>> {
+    let mut rdr = csv::Reader::from_reader(content.as_bytes());
     debug!("heads={:?}", rdr.headers()?);
     Ok(rdr
         .deserialize()

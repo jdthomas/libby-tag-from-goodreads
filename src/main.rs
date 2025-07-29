@@ -265,6 +265,7 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
     let mut existing_ct = 0;
     let mut newly_tagged_ct = 0;
     let mut not_found_ct = 0;
+    let mut remove_ct = 0;
 
     while let Some((action, title, found_book)) = found_books.next().await {
         match found_book {
@@ -280,6 +281,7 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
                             );
                         }
                         TagAction::Remove => {
+                            remove_ct += 1;
                             println!("{:20} '{}'", "Removing".green(), book_info.title);
                             if !command_args.dry_run {
                                 libby_client
@@ -319,8 +321,8 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
     }
 
     println!(
-        "Summary: Tagged {}, Existing {}, Not Found {}.",
-        newly_tagged_ct, existing_ct, not_found_ct
+        "Summary: Tagged {}, Existing {}, Not Found {}, Removed {}.",
+        newly_tagged_ct, existing_ct, not_found_ct, remove_ct
     );
 
     Ok(())

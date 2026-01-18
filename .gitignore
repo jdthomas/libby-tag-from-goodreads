@@ -15,7 +15,7 @@ Cargo.lock
 
 # Ignore some local scripts and data
 run.sh
-run_log.txt
+run_log*.txt
 *.csv
 perf.data
 libby_config.json*

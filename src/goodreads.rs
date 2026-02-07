@@ -13,7 +13,10 @@ pub struct BookInfo {
     pub author: String,
     pub isbn: String,
     pub authors: HashSet<String>,
-    shelf: String,
+    pub shelf: String,
+    pub number_of_pages: Option<i64>,
+    pub bookshelves: Vec<String>,
+    pub average_rating: Option<f64>,
 }
 impl From<GoodReadsExportRecord> for BookInfo {
     fn from(other: GoodReadsExportRecord) -> Self {
@@ -24,12 +27,22 @@ impl From<GoodReadsExportRecord> for BookInfo {
             .chain([other.author.clone()])
             .filter(|a| !a.is_empty())
             .collect();
+        let bookshelves = other
+            .bookshelves
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let average_rating = other.average_rating.parse::<f64>().ok();
         Self {
             title: other.title,
+            number_of_pages: other.number_of_pages,
             author: other.author,
             isbn: other.ISBN,
             authors,
             shelf: other.exclusive_shelf.clone(),
+            bookshelves,
+            average_rating,
         }
     }
 }

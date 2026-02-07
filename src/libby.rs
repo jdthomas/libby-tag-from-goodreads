@@ -179,34 +179,48 @@ struct LibbyCardSync {
 
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
-struct LibbyBookType {
-    id: String,
-    name: String,
+pub(crate) struct LibbyBookType {
+    pub id: String,
+    pub name: String,
 }
 
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-struct LibbySearchResultItem {
-    is_available: bool,
-    // isOwned: bool,
-    // ownedCopies: Option<i64>,
-    // edition: Option<String>,
-    // estimatedWaitDays: i64,
-    // holdsCount: i64,
-    // holdsRatio: f64,
-    id: String,
-    // isPreReleaseTitle: bool,
-    // availableCopies: i64,
-    // starRating: Option<f64>,
-    // starRatingCount: Option<i64>,
-    first_creator_name: String,
-    // subjects: Vec<serde_json::Value>,
-    sort_title: String,
-    // title: String,
-    // subtitle: String,
+pub(crate) struct LibbySearchResultItem {
+    pub is_available: bool,
+    pub is_owned: Option<bool>,
+    pub owned_copies: Option<i64>,
+    pub estimated_wait_days: Option<i64>,
+    pub holds_count: Option<i64>,
+    pub available_copies: Option<i64>,
+    pub id: String,
+    pub first_creator_name: String,
+    pub sort_title: String,
     #[serde(alias = "type")]
-    book_type: LibbyBookType,
+    pub book_type: LibbyBookType,
+    #[serde(default, deserialize_with = "deserialize_subjects")]
+    pub subjects: Vec<LibbySubject>,
+}
+
+fn deserialize_subjects<'de, D>(deserializer: D) -> std::result::Result<Vec<LibbySubject>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // OverDrive API returns {} instead of [] when empty, so we handle both
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Array(arr) => {
+            let mut subjects = Vec::new();
+            for item in arr {
+                if let Ok(subject) = serde_json::from_value::<LibbySubject>(item) {
+                    subjects.push(subject);
+                }
+            }
+            Ok(subjects)
+        }
+        _ => Ok(Vec::new()),
+    }
 }
 
 #[allow(dead_code)]
@@ -231,9 +245,9 @@ struct LibbyTagQuery {
 }
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
-struct LibbySubject {
-    id: String,
-    name: String,
+pub(crate) struct LibbySubject {
+    pub id: String,
+    pub name: String,
 }
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
@@ -474,12 +488,12 @@ impl LibbyClient {
             .context("Unable to sync card")
     }
 
-    pub async fn search_for_book_by_title(
+    async fn search_items(
         &self,
         search_opts: SearchOptions,
         title: &str,
         authors: Option<&HashSet<String>>,
-    ) -> Result<BookInfo> {
+    ) -> Result<Option<LibbySearchResultItem>> {
         let url = url_for_query(&self.card.advantage_key, search_opts.clone(), title)?;
         let mut response = self
             .make_libby_library_get_request::<LibbySearchResult, _>(url)
@@ -497,17 +511,53 @@ impl LibbyClient {
             }
         }
 
-        response
-            .items
-            .iter()
-            .find(|b| {
-                authors.is_none() || fuzzy_author_compare(authors.unwrap(), &b.first_creator_name)
-            })
+        Ok(response.items.into_iter().find(|b| {
+            authors.is_none() || fuzzy_author_compare(authors.unwrap(), &b.first_creator_name)
+        }))
+    }
+
+    pub async fn search_for_book_by_title(
+        &self,
+        search_opts: SearchOptions,
+        title: &str,
+        authors: Option<&HashSet<String>>,
+    ) -> Result<BookInfo> {
+        self.search_items(search_opts, title, authors)
+            .await?
             .map(|b| BookInfo {
                 title: b.sort_title.to_string(),
                 libby_id: b.id.to_string(),
             })
             .context(format!("Book '{}' not found", title))
+    }
+
+    pub(crate) async fn search_for_book_details(
+        &self,
+        search_opts: SearchOptions,
+        title: &str,
+        authors: Option<&HashSet<String>>,
+    ) -> Result<LibbySearchResultItem> {
+        self.search_items(search_opts, title, authors)
+            .await?
+            .context(format!("Book '{}' not found", title))
+    }
+
+    pub(crate) async fn get_book_formats(&self, libby_id: &str) -> Result<Vec<String>> {
+        let url = format!(
+            "https://thunder.api.overdrive.com/v2/libraries/{}/media/{}",
+            self.card.advantage_key, libby_id
+        );
+        let response: serde_json::Value = self.make_libby_library_get_request(url).await?;
+        let formats = response
+            .get("formats")
+            .and_then(|f| f.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|f| f.get("id").and_then(|id| id.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(formats)
     }
 
     pub async fn get_existing_tag_by_name(&self, name: &str) -> Result<TagInfo> {

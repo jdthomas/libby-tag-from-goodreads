@@ -9,6 +9,7 @@ use futures::StreamExt;
 use tracing::debug;
 use tracing::info;
 
+pub mod browse;
 pub mod goodreads;
 pub mod goodreads_export;
 pub mod libby;
@@ -29,6 +30,8 @@ enum Commands {
     ListCards,
     /// Download Goodreads export CSV using browser session cookies
     GrExport(GrExportArgs),
+    /// Browse Goodreads to-read list as ebooks available in Libby
+    Browse(BrowseArgs),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -102,6 +105,41 @@ struct GrExportArgs {
     max_poll_attempts: u32,
 }
 
+#[derive(Parser, Debug, Clone)]
+struct BrowseArgs {
+    /// Path to local file with a goodreads exported CSV
+    #[clap(long)]
+    goodreads_export_csv: PathBuf,
+
+    /// The card id in Libby
+    #[clap(long)]
+    card_id: String,
+
+    /// The name of the shelf in Goodreads to filter for
+    #[clap(long, default_value = "to-read")]
+    goodreads_shelf: String,
+
+    /// Comma-separated tags to filter by (e.g. --tags od-f,b)
+    #[clap(long, value_delimiter = ',')]
+    tags: Vec<String>,
+
+    /// Minimum page count filter
+    #[clap(long)]
+    min_pages: Option<i64>,
+
+    /// Maximum page count filter
+    #[clap(long)]
+    max_pages: Option<i64>,
+
+    /// Output HTML file path
+    #[clap(long, default_value = "browse.html")]
+    output: PathBuf,
+
+    /// Format cache file path (for Kindle detection)
+    #[clap(long, default_value = "browse_cache.json")]
+    cache_file: PathBuf,
+}
+
 #[derive(Debug, Parser)]
 #[clap(name = "Goodreads shelves to Libby tag")]
 struct CommandArgs {
@@ -139,6 +177,22 @@ async fn main() -> anyhow::Result<()> {
         Commands::ListCards => {
             let cards = libby::get_cards(app_args.libby_conf_file).await?;
             println!("Cards: {:#?}", cards);
+        }
+        Commands::Browse(args) => {
+            browse::browse(
+                browse::BrowseArgs {
+                    goodreads_export_csv: args.goodreads_export_csv,
+                    card_id: args.card_id,
+                    goodreads_shelf: args.goodreads_shelf,
+                    tags: args.tags,
+                    min_pages: args.min_pages,
+                    max_pages: args.max_pages,
+                    output: args.output,
+                    cache_file: args.cache_file,
+                },
+                app_args.libby_conf_file,
+            )
+            .await?;
         }
         Commands::GrExport(args) => {
             let exporter =

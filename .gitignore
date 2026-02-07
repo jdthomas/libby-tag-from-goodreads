@@ -20,4 +20,7 @@ run_log*.txt
 perf.data
 libby_config.json*
 goodreads_config*.json
+browse.html
+browse.sh
+browse_cache.json
 .DS_Store

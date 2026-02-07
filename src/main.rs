@@ -10,6 +10,7 @@ use tracing::debug;
 use tracing::info;
 
 pub mod goodreads;
+pub mod goodreads_export;
 pub mod libby;
 
 use goodreads::get_book_titles_from_goodreads;
@@ -26,6 +27,8 @@ enum Commands {
     Gr2lib(GR2LibbyArgs),
     /// List cards that are synced with account
     ListCards,
+    /// Download Goodreads export CSV using browser session cookies
+    GrExport(GrExportArgs),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -80,6 +83,25 @@ struct GR2LibbyArgs {
     dry_run: bool,
 }
 
+#[derive(Parser, Debug, Clone)]
+struct GrExportArgs {
+    /// Path to goodreads config JSON with user_id and cookies
+    #[clap(long, default_value = "./goodreads_config.json")]
+    goodreads_conf_file: PathBuf,
+
+    /// Where to save the exported CSV
+    #[clap(long)]
+    output: PathBuf,
+
+    /// Seconds between poll attempts while waiting for export
+    #[clap(long, default_value = "5")]
+    poll_interval_secs: u64,
+
+    /// Maximum number of poll attempts before giving up
+    #[clap(long, default_value = "60")]
+    max_poll_attempts: u32,
+}
+
 #[derive(Debug, Parser)]
 #[clap(name = "Goodreads shelves to Libby tag")]
 struct CommandArgs {
@@ -117,6 +139,17 @@ async fn main() -> anyhow::Result<()> {
         Commands::ListCards => {
             let cards = libby::get_cards(app_args.libby_conf_file).await?;
             println!("Cards: {:#?}", cards);
+        }
+        Commands::GrExport(args) => {
+            let exporter =
+                goodreads_export::GoodreadsExporter::new(args.goodreads_conf_file).await?;
+            exporter
+                .export(
+                    args.output,
+                    tokio::time::Duration::from_secs(args.poll_interval_secs),
+                    args.max_poll_attempts,
+                )
+                .await?;
         }
     }
     Ok(())

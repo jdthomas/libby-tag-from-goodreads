@@ -231,7 +231,7 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
         command_args.goodreads_shelf,
         command_args.tag_name,
     );
-    if let Some(ref remove_shelf) = &command_args.goodreads_remove_shelf {
+    if let Some(remove_shelf) = &command_args.goodreads_remove_shelf {
         eprint!(
             "Will remove tag '{}' from books on the '{}' shelf",
             command_args.tag_name, remove_shelf
@@ -255,14 +255,13 @@ async fn gr2libby(command_args: GR2LibbyArgs, libby_conf_file: PathBuf) -> anyho
                 command_args.goodreads_shelf
             )
         })?;
-    let goodreads_remove_books =
-        if let Some(ref remove_shelf) = &command_args.goodreads_remove_shelf {
-            all_goodread_books.remove(remove_shelf).with_context(|| {
-                format!("shelf '{}' not found in goodreads export", remove_shelf)
-            })?
-        } else {
-            vec![]
-        };
+    let goodreads_remove_books = if let Some(remove_shelf) = &command_args.goodreads_remove_shelf {
+        all_goodread_books
+            .remove(remove_shelf)
+            .with_context(|| format!("shelf '{}' not found in goodreads export", remove_shelf))?
+    } else {
+        vec![]
+    };
 
     let existing_books = libby_client
         .get_books_for_tag(&tag_info)

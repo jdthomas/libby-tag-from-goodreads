@@ -3,15 +3,15 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
-use anyhow::bail;
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::bail;
 use base64::Engine;
 use clap::Parser;
 use itertools::Itertools;
+use reqwest::IntoUrl;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
-use reqwest::IntoUrl;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
@@ -502,13 +502,14 @@ impl LibbyClient {
         debug!("{:#?}", response);
         // Library search does not handle subtitles well, if we found nothing, lets
         // try with any part of title leading to ':'
-        if response.items.is_empty() && title.contains(':') {
-            if let Some(t2) = title.split_once(':').map(|(t2, _)| t2) {
-                let url = url_for_query(&self.card.advantage_key, search_opts, t2)?;
-                response = self
-                    .make_libby_library_get_request::<LibbySearchResult, _>(url)
-                    .await?;
-            }
+        if response.items.is_empty()
+            && title.contains(':')
+            && let Some(t2) = title.split_once(':').map(|(t2, _)| t2)
+        {
+            let url = url_for_query(&self.card.advantage_key, search_opts, t2)?;
+            response = self
+                .make_libby_library_get_request::<LibbySearchResult, _>(url)
+                .await?;
         }
 
         Ok(response.items.into_iter().find(|b| {

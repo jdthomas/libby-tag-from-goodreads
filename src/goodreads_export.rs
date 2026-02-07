@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use anyhow::bail;
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::bail;
 use reqwest::header;
 use scraper::Html;
 use scraper::Selector;

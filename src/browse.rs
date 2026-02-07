@@ -22,6 +22,7 @@ pub struct BrowseResult {
     pub pages: Option<i64>,
     pub goodreads_shelves: Vec<String>,
     pub libby_id: String,
+    pub goodreads_id: i64,
     pub is_available: bool,
     pub estimated_wait_days: Option<i64>,
     pub holds_count: Option<i64>,
@@ -30,6 +31,9 @@ pub struct BrowseResult {
     pub has_kindle: Option<bool>,
     pub subjects: Vec<String>,
     pub average_rating: Option<f64>,
+    pub year_published: Option<i16>,
+    pub date_added: String,
+    pub private_notes: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -189,6 +193,7 @@ pub async fn browse(args: BrowseArgs, libby_conf_file: PathBuf) -> Result<()> {
                 pages: book.number_of_pages,
                 goodreads_shelves: book.bookshelves.clone(),
                 libby_id: item.id,
+                goodreads_id: book.book_id,
                 is_available: item.is_available,
                 estimated_wait_days: item.estimated_wait_days,
                 holds_count: item.holds_count,
@@ -197,6 +202,9 @@ pub async fn browse(args: BrowseArgs, libby_conf_file: PathBuf) -> Result<()> {
                 has_kindle,
                 subjects: item.subjects.into_iter().map(|s| s.name).collect(),
                 average_rating: book.average_rating,
+                year_published: book.year_published,
+                date_added: book.date_added.clone(),
+                private_notes: book.private_notes.clone(),
             }
         })
         .collect();
@@ -351,6 +359,44 @@ tr:hover td {{ background: #111; }}
 .unavail {{ color: #5f5f5f; }}
 .kindle {{ color: #d75f5f; }}
 .sort-arrow {{ font-size: 10px; margin-left: 4px; }}
+.col-hidden {{ display: none; }}
+.gear-wrapper {{
+  position: relative;
+  display: inline-block;
+  margin-left: 12px;
+}}
+.gear-btn {{
+  background: none;
+  border: 1px solid #333;
+  color: #666;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 8px;
+  font-family: inherit;
+}}
+.gear-btn:hover {{ color: #5faf5f; border-color: #5faf5f; }}
+.gear-panel {{
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: #141414;
+  border: 1px solid #333;
+  padding: 8px 12px;
+  z-index: 100;
+  min-width: 160px;
+}}
+.gear-panel.open {{ display: block; }}
+.gear-panel label {{
+  display: block;
+  padding: 3px 0;
+  cursor: pointer;
+  color: #999;
+  font-size: 12px;
+  white-space: nowrap;
+}}
+.gear-panel label:hover {{ color: #b0b0b0; }}
+.gear-panel input {{ accent-color: #5faf5f; margin-right: 6px; }}
 </style>
 </head>
 <body>
@@ -360,6 +406,10 @@ tr:hover td {{ background: #111; }}
   <div class="stats">
     <span id="shown-count">{total}</span> of {total} books shown
     &middot; <span>{available}</span> available now
+    <span class="gear-wrapper">
+      <button class="gear-btn" id="gear-btn" title="Column settings">&#9881;</button>
+      <div class="gear-panel" id="gear-panel"></div>
+    </span>
   </div>
 </div>
 
@@ -397,14 +447,17 @@ tr:hover td {{ background: #111; }}
 <table>
   <thead>
     <tr>
-      <th data-sort="title">title<span class="sort-arrow"></span></th>
-      <th data-sort="author">author<span class="sort-arrow"></span></th>
-      <th data-sort="pages">pages<span class="sort-arrow"></span></th>
-      <th data-sort="rating">rating<span class="sort-arrow"></span></th>
-      <th>shelves</th>
-      <th>subjects</th>
-      <th data-sort="available">status<span class="sort-arrow"></span></th>
-      <th>link</th>
+      <th data-sort="title" data-col="title">title<span class="sort-arrow"></span></th>
+      <th data-sort="author" data-col="author">author<span class="sort-arrow"></span></th>
+      <th data-sort="pages" data-col="pages">pages<span class="sort-arrow"></span></th>
+      <th data-sort="rating" data-col="rating">rating<span class="sort-arrow"></span></th>
+      <th data-col="shelves">shelves</th>
+      <th data-col="subjects">subjects</th>
+      <th data-sort="year" data-col="year">year<span class="sort-arrow"></span></th>
+      <th data-sort="added" data-col="added">added<span class="sort-arrow"></span></th>
+      <th data-col="notes">notes</th>
+      <th data-sort="available" data-col="status">status<span class="sort-arrow"></span></th>
+      <th data-col="link">link</th>
     </tr>
   </thead>
   <tbody id="book-table"></tbody>
@@ -455,6 +508,8 @@ function sortData(data) {{
       case "author": va = a.author.toLowerCase(); vb = b.author.toLowerCase(); break;
       case "pages": va = a.pages || 99999; vb = b.pages || 99999; break;
       case "rating": va = a.average_rating || 0; vb = b.average_rating || 0; break;
+      case "year": va = a.year_published || 0; vb = b.year_published || 0; break;
+      case "added": va = a.date_added; vb = b.date_added; break;
       case "available":
         va = a.is_available ? 0 : (a.estimated_wait_days || 999);
         vb = b.is_available ? 0 : (b.estimated_wait_days || 999);
@@ -518,17 +573,24 @@ function render() {{
       ? `<span class="rating">${{b.average_rating.toFixed(2)}}</span>`
       : `<span style="color:#333">-</span>`;
     const subjects = b.subjects.map(s => `<span class="badge">${{s}}</span>`).join("");
+    const year = b.year_published != null ? b.year_published : `<span style="color:#333">-</span>`;
+    const added = b.date_added || `<span style="color:#333">-</span>`;
+    const notes = b.private_notes ? b.private_notes : `<span style="color:#333">-</span>`;
     return `<tr>
-      <td>${{b.title}}</td>
-      <td>${{b.author}}</td>
-      <td>${{pages}}</td>
-      <td>${{rating}}</td>
-      <td>${{shelves}}</td>
-      <td>${{subjects}}</td>
-      <td>${{status}}</td>
-      <td><a href="https://libbyapp.com/search/query-${{b.libby_id}}/page-1" target="_blank">open</a></td>
+      <td data-col="title">${{b.title}}</td>
+      <td data-col="author">${{b.author}}</td>
+      <td data-col="pages">${{pages}}</td>
+      <td data-col="rating">${{rating}}</td>
+      <td data-col="shelves">${{shelves}}</td>
+      <td data-col="subjects">${{subjects}}</td>
+      <td data-col="year">${{year}}</td>
+      <td data-col="added">${{added}}</td>
+      <td data-col="notes">${{notes}}</td>
+      <td data-col="status">${{status}}</td>
+      <td data-col="link"><a href="https://www.goodreads.com/book/show/${{b.goodreads_id}}" target="_blank">open</a></td>
     </tr>`;
   }}).join("");
+  if (typeof applyColVisibility === "function") applyColVisibility();
 }}
 
 document.querySelectorAll("th[data-sort]").forEach(th => {{
@@ -553,9 +615,72 @@ document.getElementById("subjects-toggle").addEventListener("click", () => {{
   arrow.textContent = el.classList.contains("collapsed") ? "+" : "\u2212";
 }});
 
+const COLUMNS = [
+  {{ key: "title", label: "Title", defaultOn: true }},
+  {{ key: "author", label: "Author", defaultOn: true }},
+  {{ key: "pages", label: "Pages", defaultOn: true }},
+  {{ key: "rating", label: "Rating", defaultOn: true }},
+  {{ key: "shelves", label: "Shelves", defaultOn: true }},
+  {{ key: "subjects", label: "Subjects", defaultOn: false }},
+  {{ key: "year", label: "Year", defaultOn: true }},
+  {{ key: "added", label: "Added", defaultOn: true }},
+  {{ key: "notes", label: "Notes", defaultOn: false }},
+  {{ key: "status", label: "Status", defaultOn: true }},
+  {{ key: "link", label: "Link", defaultOn: true }},
+];
+const STORAGE_KEY = "browse-col-visibility";
+
+function loadColVisibility() {{
+  try {{
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (saved && typeof saved === "object") return saved;
+  }} catch (_) {{}}
+  return Object.fromEntries(COLUMNS.map(c => [c.key, c.defaultOn]));
+}}
+
+let colVisibility = loadColVisibility();
+
+function saveColVisibility() {{
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(colVisibility));
+}}
+
+function applyColVisibility() {{
+  for (const col of COLUMNS) {{
+    const hidden = !colVisibility[col.key];
+    document.querySelectorAll(`[data-col="${{col.key}}"]`).forEach(el => {{
+      el.classList.toggle("col-hidden", hidden);
+    }});
+  }}
+}}
+
+function initGearPanel() {{
+  const panel = document.getElementById("gear-panel");
+  panel.innerHTML = COLUMNS.map(c => {{
+    const checked = colVisibility[c.key] ? "checked" : "";
+    return `<label><input type="checkbox" data-col-toggle="${{c.key}}" ${{checked}}> ${{c.label}}</label>`;
+  }}).join("");
+
+  panel.querySelectorAll("input[data-col-toggle]").forEach(cb => {{
+    cb.addEventListener("change", () => {{
+      colVisibility[cb.dataset.colToggle] = cb.checked;
+      saveColVisibility();
+      applyColVisibility();
+    }});
+  }});
+
+  document.getElementById("gear-btn").addEventListener("click", (e) => {{
+    e.stopPropagation();
+    panel.classList.toggle("open");
+  }});
+  document.addEventListener("click", () => panel.classList.remove("open"));
+  panel.addEventListener("click", (e) => e.stopPropagation());
+}}
+
+initGearPanel();
 initShelves();
 initSubjects();
 render();
+applyColVisibility();
 </script>
 </body>
 </html>

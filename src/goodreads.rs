@@ -17,6 +17,10 @@ pub struct BookInfo {
     pub number_of_pages: Option<i64>,
     pub bookshelves: Vec<String>,
     pub average_rating: Option<f64>,
+    pub book_id: i64,
+    pub year_published: Option<i16>,
+    pub date_added: String,
+    pub private_notes: Option<String>,
 }
 impl From<GoodReadsExportRecord> for BookInfo {
     fn from(other: GoodReadsExportRecord) -> Self {
@@ -43,6 +47,10 @@ impl From<GoodReadsExportRecord> for BookInfo {
             shelf: other.exclusive_shelf.clone(),
             bookshelves,
             average_rating,
+            book_id: other.book_id,
+            year_published: other.year_published,
+            date_added: other.date_added,
+            private_notes: other.private_notes,
         }
     }
 }

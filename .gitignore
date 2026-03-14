@@ -24,3 +24,4 @@ browse.html
 browse.sh
 browse_cache.json
 .DS_Store
+.claude/

@@ -275,6 +275,51 @@ struct LibbyTagList {
     tags: Vec<LibbyTag>,
 }
 
+/// Parse an ISO 8601 duration string (e.g. "PT10H30M15S") into total seconds.
+fn parse_iso_duration(s: &str) -> Option<i64> {
+    let s = s.strip_prefix("PT")?;
+    let mut seconds = 0i64;
+    let mut cur = String::new();
+    for ch in s.chars() {
+        match ch {
+            '0'..='9' => cur.push(ch),
+            'H' => {
+                seconds += cur.parse::<i64>().ok()? * 3600;
+                cur.clear();
+            }
+            'M' => {
+                seconds += cur.parse::<i64>().ok()? * 60;
+                cur.clear();
+            }
+            'S' => {
+                seconds += cur.parse::<i64>().ok()?;
+                cur.clear();
+            }
+            _ => return None,
+        }
+    }
+    Some(seconds)
+}
+
+/// Parse an H:MM:SS or HH:MM:SS duration string into total seconds.
+fn parse_hms_duration(s: &str) -> Option<i64> {
+    let parts: Vec<&str> = s.splitn(3, ':').collect();
+    match parts.as_slice() {
+        [h, m, s] => {
+            let hours: i64 = h.parse().ok()?;
+            let mins: i64 = m.parse().ok()?;
+            let secs: i64 = s.parse().ok()?;
+            Some(hours * 3600 + mins * 60 + secs)
+        }
+        [m, s] => {
+            let mins: i64 = m.parse().ok()?;
+            let secs: i64 = s.parse().ok()?;
+            Some(mins * 60 + secs)
+        }
+        _ => None,
+    }
+}
+
 fn fuzzy_author_compare(haystack: &HashSet<String>, needle: &str) -> bool {
     println!("    {} in {:?}?", needle, haystack);
     let lower_haystack = haystack
@@ -387,6 +432,7 @@ impl LibbyClient {
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3")
             .default_headers(headers)
+            .use_native_tls()
             .build()?;
         Ok(client)
     }
@@ -543,7 +589,11 @@ impl LibbyClient {
             .context(format!("Book '{}' not found", title))
     }
 
-    pub(crate) async fn get_book_formats(&self, libby_id: &str) -> Result<Vec<String>> {
+    /// Returns (format_ids, duration_seconds). Duration is only present for audiobooks.
+    pub(crate) async fn get_media_info(
+        &self,
+        libby_id: &str,
+    ) -> Result<(Vec<String>, Option<i64>)> {
         let url = format!(
             "https://thunder.api.overdrive.com/v2/libraries/{}/media/{}",
             self.card.advantage_key, libby_id
@@ -558,7 +608,16 @@ impl LibbyClient {
                     .collect()
             })
             .unwrap_or_default();
-        Ok(formats)
+        let format_arr = response.get("formats").and_then(|f| f.as_array());
+        let duration_seconds = format_arr.and_then(|arr| {
+            arr.iter().find_map(|f| {
+                f.get("duration")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .and_then(|s| parse_hms_duration(s).or_else(|| parse_iso_duration(s)))
+            })
+        });
+        Ok((formats, duration_seconds))
     }
 
     pub async fn get_existing_tag_by_name(&self, name: &str) -> Result<TagInfo> {

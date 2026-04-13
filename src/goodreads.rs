@@ -72,7 +72,7 @@ struct GoodReadsExportRecord {
     ISBN13: String,
     #[serde(alias = "My Rating")]
     my_rating: Option<String>,
-    #[serde(alias = "Average Rating")]
+    #[serde(alias = "Average Rating", default)]
     average_rating: String,
     #[serde(alias = "Publisher")]
     publisher: String,

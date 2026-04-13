@@ -16,29 +16,44 @@ use crate::libby::LibbyClient;
 use crate::libby::SearchOptions;
 
 #[derive(Debug, Serialize)]
-pub struct BrowseResult {
-    pub title: String,
-    pub author: String,
-    pub pages: Option<i64>,
-    pub goodreads_shelves: Vec<String>,
+pub struct LibbyMediaData {
     pub libby_id: String,
-    pub goodreads_id: i64,
     pub is_available: bool,
     pub estimated_wait_days: Option<i64>,
     pub holds_count: Option<i64>,
     pub owned_copies: Option<i64>,
     pub available_copies: Option<i64>,
+    // ebook-specific
+    pub pages: Option<i64>,
     pub has_kindle: Option<bool>,
+    // audiobook-specific
+    pub duration_seconds: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BrowseResult {
+    pub title: String,
+    pub author: String,
+    pub goodreads_id: i64,
+    pub goodreads_shelves: Vec<String>,
     pub subjects: Vec<String>,
     pub average_rating: Option<f64>,
     pub year_published: Option<i16>,
     pub date_added: String,
     pub private_notes: Option<String>,
+    pub ebook: Option<LibbyMediaData>,
+    pub audiobook: Option<LibbyMediaData>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct MediaInfo {
+    formats: Vec<String>,
+    duration_seconds: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct FormatCache {
-    entries: HashMap<String, Vec<String>>,
+    entries: HashMap<String, MediaInfo>,
 }
 
 impl FormatCache {
@@ -108,73 +123,97 @@ pub async fn browse(args: BrowseArgs, libby_conf_file: PathBuf) -> Result<()> {
         .collect();
     info!("After page filter: {} books", books.len());
 
-    // 4. Search Libby in parallel
-    eprintln!("Searching Libby for {} ebooks...", books.len());
+    // 4. Search Libby in parallel for both ebook and audiobook formats
+    eprintln!(
+        "Searching Libby for {} books (ebook + audiobook)...",
+        books.len()
+    );
     let lc = &libby_client;
     let search_results: Vec<_> = futures::stream::iter(books.iter().map(|book| async move {
-        let result = lc
-            .search_for_book_details(
-                SearchOptions {
-                    book_type: BookType::Ebook,
-                    deep_search: true,
-                    max_results: 24,
-                },
-                &book.title,
-                Some(&book.authors),
-            )
-            .await;
-        (book, result)
+        let ebook_fut = lc.search_for_book_details(
+            SearchOptions {
+                book_type: BookType::Ebook,
+                deep_search: true,
+                max_results: 24,
+            },
+            &book.title,
+            Some(&book.authors),
+        );
+        let audio_fut = lc.search_for_book_details(
+            SearchOptions {
+                book_type: BookType::Audiobook,
+                deep_search: true,
+                max_results: 24,
+            },
+            &book.title,
+            Some(&book.authors),
+        );
+        let (ebook_result, audio_result) = tokio::join!(ebook_fut, audio_fut);
+        (book, ebook_result, audio_result)
     }))
-    .buffer_unordered(25)
+    .buffer_unordered(12)
     .collect()
     .await;
 
-    let mut found: Vec<(&goodreads::BookInfo, crate::libby::LibbySearchResultItem)> = Vec::new();
-    let mut not_found = 0usize;
-    for (book, result) in search_results {
-        match result {
-            Ok(item) => found.push((book, item)),
-            Err(e) => {
-                not_found += 1;
-                debug!("Not found in Libby: '{}' -- {:?}", book.title, e);
-            }
+    // Collect unique libby ids that need media info fetched
+    let mut found: Vec<(
+        &goodreads::BookInfo,
+        Option<crate::libby::LibbySearchResultItem>,
+        Option<crate::libby::LibbySearchResultItem>,
+    )> = Vec::new();
+    for (book, ebook_result, audio_result) in search_results {
+        let ebook = ebook_result
+            .map_err(|e| {
+                debug!("Ebook not found '{}': {:?}", book.title, e);
+            })
+            .ok();
+        let audio = audio_result
+            .map_err(|e| {
+                debug!("Audiobook not found '{}': {:?}", book.title, e);
+            })
+            .ok();
+        if ebook.is_some() || audio.is_some() {
+            found.push((book, ebook, audio));
         }
     }
-    eprintln!(
-        "Found {} of {} books in Libby ({} not found)",
-        found.len(),
-        found.len() + not_found,
-        not_found
-    );
+    eprintln!("Found {} books with at least one Libby format", found.len());
 
-    // 5. Load format cache and fetch missing
+    // 5. Load media info cache and fetch missing entries
     let mut cache = FormatCache::load(&args.cache_file).await;
-    let uncached: Vec<&str> = found
+    let all_ids: Vec<String> = found
         .iter()
-        .filter(|(_, item)| !cache.entries.contains_key(&item.id))
-        .map(|(_, item)| item.id.as_str())
+        .flat_map(|(_, ebook, audio)| ebook.iter().chain(audio.iter()).map(|item| item.id.clone()))
+        .filter(|id| !cache.entries.contains_key(id))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
         .collect();
 
-    if !uncached.is_empty() {
-        eprintln!("Fetching format details for {} books...", uncached.len());
-        let format_results: Vec<_> = futures::stream::iter(uncached.into_iter().map(|id| {
+    if !all_ids.is_empty() {
+        eprintln!("Fetching media info for {} items...", all_ids.len());
+        let info_results: Vec<_> = futures::stream::iter(all_ids.into_iter().map(|id| {
             let lc = &libby_client;
             async move {
-                let formats = lc.get_book_formats(id).await;
-                (id.to_string(), formats)
+                let info = lc.get_media_info(&id).await;
+                (id, info)
             }
         }))
         .buffer_unordered(10)
         .collect()
         .await;
 
-        for (id, formats) in format_results {
-            match formats {
-                Ok(f) => {
-                    cache.entries.insert(id, f);
+        for (id, info) in info_results {
+            match info {
+                Ok((formats, duration_seconds)) => {
+                    cache.entries.insert(
+                        id,
+                        MediaInfo {
+                            formats,
+                            duration_seconds,
+                        },
+                    );
                 }
                 Err(e) => {
-                    warn!("Failed to fetch formats for {}: {:?}", id, e);
+                    warn!("Failed to fetch media info for {}: {:?}", id, e);
                 }
             }
         }
@@ -182,60 +221,104 @@ pub async fn browse(args: BrowseArgs, libby_conf_file: PathBuf) -> Result<()> {
     }
 
     // 6. Build results
-    let mut results: Vec<BrowseResult> = found
-        .into_iter()
-        .map(|(book, item)| {
-            let formats = cache.entries.get(&item.id);
-            let has_kindle = formats.map(|f| f.iter().any(|fmt| fmt == "ebook-kindle"));
-            BrowseResult {
-                title: item.sort_title,
-                author: item.first_creator_name,
-                pages: book.number_of_pages,
-                goodreads_shelves: book.bookshelves.clone(),
+    let build_media =
+        |item: crate::libby::LibbySearchResultItem, pages: Option<i64>| -> LibbyMediaData {
+            let info = cache.entries.get(&item.id);
+            let has_kindle = info.map(|i| i.formats.iter().any(|f| f == "ebook-kindle"));
+            let duration_seconds = info.and_then(|i| i.duration_seconds);
+            LibbyMediaData {
                 libby_id: item.id,
-                goodreads_id: book.book_id,
                 is_available: item.is_available,
                 estimated_wait_days: item.estimated_wait_days,
                 holds_count: item.holds_count,
                 owned_copies: item.owned_copies,
                 available_copies: item.available_copies,
+                pages,
                 has_kindle,
-                subjects: item.subjects.into_iter().map(|s| s.name).collect(),
+                duration_seconds,
+            }
+        };
+
+    let mut results: Vec<BrowseResult> = found
+        .into_iter()
+        .map(|(book, ebook_item, audio_item)| {
+            // Use title/author from whichever we found first
+            let (title, author, subjects) = ebook_item
+                .as_ref()
+                .or(audio_item.as_ref())
+                .map(|item| {
+                    (
+                        item.sort_title.clone(),
+                        item.first_creator_name.clone(),
+                        item.subjects
+                            .iter()
+                            .map(|s| s.name.clone())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .unwrap_or_default();
+
+            let ebook = ebook_item.map(|item| build_media(item, book.number_of_pages));
+            let audiobook = audio_item.map(|item| build_media(item, None));
+
+            BrowseResult {
+                title,
+                author,
+                goodreads_id: book.book_id,
+                goodreads_shelves: book.bookshelves.clone(),
+                subjects,
                 average_rating: book.average_rating,
                 year_published: book.year_published,
                 date_added: book.date_added.clone(),
                 private_notes: book.private_notes.clone(),
+                ebook,
+                audiobook,
             }
         })
         .collect();
 
-    // Sort: available first, then by pages ascending
+    // Sort: available first (ebook availability), then by pages ascending
     results.sort_by(|a, b| {
-        b.is_available.cmp(&a.is_available).then_with(|| {
-            a.pages
-                .unwrap_or(i64::MAX)
-                .cmp(&b.pages.unwrap_or(i64::MAX))
+        let a_avail = a.ebook.as_ref().map(|e| e.is_available).unwrap_or(false);
+        let b_avail = b.ebook.as_ref().map(|e| e.is_available).unwrap_or(false);
+        b_avail.cmp(&a_avail).then_with(|| {
+            let a_pages = a.ebook.as_ref().and_then(|e| e.pages).unwrap_or(i64::MAX);
+            let b_pages = b.ebook.as_ref().and_then(|e| e.pages).unwrap_or(i64::MAX);
+            a_pages.cmp(&b_pages)
         })
     });
 
-    let available_count = results.iter().filter(|r| r.is_available).count();
+    let ebook_avail = results
+        .iter()
+        .filter(|r| r.ebook.as_ref().map(|e| e.is_available).unwrap_or(false))
+        .count();
+    let audio_avail = results
+        .iter()
+        .filter(|r| {
+            r.audiobook
+                .as_ref()
+                .map(|e| e.is_available)
+                .unwrap_or(false)
+        })
+        .count();
     eprintln!(
-        "Generated browse page: {} books ({} available now)",
+        "Generated browse page: {} books ({} ebooks available, {} audiobooks available)",
         results.len(),
-        available_count
+        ebook_avail,
+        audio_avail
     );
 
     // 7. Render and write HTML
-    let html = render_html(&results);
+    let html = render_html(&results, ebook_avail, audio_avail);
     tokio::fs::write(&args.output, html).await?;
     eprintln!("Wrote {}", args.output.display());
 
     Ok(())
 }
 
-fn render_html(results: &[BrowseResult]) -> String {
+fn render_html(results: &[BrowseResult], ebook_avail: usize, audio_avail: usize) -> String {
     let json_data = serde_json::to_string(results).unwrap_or_else(|_| "[]".to_string());
-    let available_count = results.iter().filter(|r| r.is_available).count();
+    let total = results.len();
 
     format!(
         r##"<!DOCTYPE html>
@@ -243,7 +326,7 @@ fn render_html(results: &[BrowseResult]) -> String {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>browse // libby ebooks</title>
+<title>browse // libby</title>
 <style>
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
 body {{
@@ -271,6 +354,10 @@ a:hover {{ color: #87d787; text-decoration: underline; }}
 .header .stats {{
   color: #666;
   margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }}
 .header .stats span {{ color: #5faf5f; }}
 
@@ -360,21 +447,28 @@ tr:hover td {{ background: #111; }}
 .kindle {{ color: #d75f5f; }}
 .sort-arrow {{ font-size: 10px; margin-left: 4px; }}
 .col-hidden {{ display: none; }}
-.gear-wrapper {{
-  position: relative;
-  display: inline-block;
-  margin-left: 12px;
+.controls-group {{
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
 }}
-.gear-btn {{
+.view-btn, .gear-btn {{
   background: none;
   border: 1px solid #333;
   color: #666;
-  font-size: 16px;
+  font-size: 12px;
   cursor: pointer;
   padding: 2px 8px;
   font-family: inherit;
 }}
-.gear-btn:hover {{ color: #5faf5f; border-color: #5faf5f; }}
+.view-btn:hover, .gear-btn:hover {{ color: #5faf5f; border-color: #5faf5f; }}
+.view-btn.active {{ color: #5faf5f; border-color: #5faf5f; }}
+.gear-btn {{ font-size: 16px; }}
+.gear-wrapper {{
+  position: relative;
+  display: inline-block;
+}}
 .gear-panel {{
   display: none;
   position: absolute;
@@ -402,13 +496,17 @@ tr:hover td {{ background: #111; }}
 <body>
 
 <div class="header">
-  <h1>&gt; browse // libby ebooks</h1>
+  <h1 id="page-title">&gt; browse // libby ebooks</h1>
   <div class="stats">
-    <span id="shown-count">{total}</span> of {total} books shown
-    &middot; <span>{available}</span> available now
-    <span class="gear-wrapper">
-      <button class="gear-btn" id="gear-btn" title="Column settings">&#9881;</button>
-      <div class="gear-panel" id="gear-panel"></div>
+    <span><span id="shown-count">{total}</span> of {total} books</span>
+    &middot; <span id="avail-label"><span id="avail-count">{ebook_avail}</span> available now</span>
+    <span class="controls-group">
+      <button class="view-btn active" id="btn-ebook" title="Ebook view">ebook</button>
+      <button class="view-btn" id="btn-audio" title="Audiobook view">audio</button>
+      <span class="gear-wrapper">
+        <button class="gear-btn" id="gear-btn" title="Column settings">&#9881;</button>
+        <div class="gear-panel" id="gear-panel"></div>
+      </span>
     </span>
   </div>
 </div>
@@ -418,7 +516,7 @@ tr:hover td {{ background: #111; }}
     <label>search</label>
     <input type="text" id="search" placeholder="title or author...">
   </div>
-  <div class="filter-group">
+  <div class="filter-group" id="pages-filter-group">
     <label>pages</label>
     <div style="display:flex;gap:4px;align-items:center;">
       <input type="number" id="min-pages" placeholder="min">
@@ -430,7 +528,7 @@ tr:hover td {{ background: #111; }}
     <label>&nbsp;</label>
     <label class="toggle"><input type="checkbox" id="avail-only"> available only</label>
   </div>
-  <div class="filter-group">
+  <div class="filter-group" id="kindle-filter-group">
     <label>&nbsp;</label>
     <label class="toggle"><input type="checkbox" id="kindle-only"> kindle only</label>
   </div>
@@ -450,6 +548,7 @@ tr:hover td {{ background: #111; }}
       <th data-sort="title" data-col="title">title<span class="sort-arrow"></span></th>
       <th data-sort="author" data-col="author">author<span class="sort-arrow"></span></th>
       <th data-sort="pages" data-col="pages">pages<span class="sort-arrow"></span></th>
+      <th data-sort="duration" data-col="duration">duration<span class="sort-arrow"></span></th>
       <th data-sort="rating" data-col="rating">rating<span class="sort-arrow"></span></th>
       <th data-col="shelves">shelves</th>
       <th data-col="subjects">subjects</th>
@@ -465,9 +564,12 @@ tr:hover td {{ background: #111; }}
 
 <script>
 const DATA = {json_data};
+const EBOOK_AVAIL = {ebook_avail};
+const AUDIO_AVAIL = {audio_avail};
 
 let sortCol = "available";
 let sortAsc = false;
+let currentView = localStorage.getItem("browse-view") || "ebook";
 
 const allShelves = [...new Set(DATA.flatMap(b => b.goodreads_shelves))].sort();
 const allSubjects = [...new Set(DATA.flatMap(b => b.subjects))].sort();
@@ -500,19 +602,38 @@ function getActiveSubjects() {{
   return [...document.querySelectorAll("#subject-filters .subject-tag.active")].map(t => t.dataset.subject);
 }}
 
+function fmtDuration(secs) {{
+  if (secs == null) return null;
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return h > 0 ? `${{h}}h ${{m}}m` : `${{m}}m`;
+}}
+
+function getMedia(b) {{
+  return currentView === "ebook" ? b.ebook : b.audiobook;
+}}
+
 function sortData(data) {{
   return data.sort((a, b) => {{
+    const ma = getMedia(a), mb = getMedia(b);
     let va, vb;
     switch (sortCol) {{
       case "title": va = a.title.toLowerCase(); vb = b.title.toLowerCase(); break;
       case "author": va = a.author.toLowerCase(); vb = b.author.toLowerCase(); break;
-      case "pages": va = a.pages || 99999; vb = b.pages || 99999; break;
+      case "pages":
+        va = (ma && ma.pages) || 99999;
+        vb = (mb && mb.pages) || 99999;
+        break;
+      case "duration":
+        va = (ma && ma.duration_seconds) || 999999;
+        vb = (mb && mb.duration_seconds) || 999999;
+        break;
       case "rating": va = a.average_rating || 0; vb = b.average_rating || 0; break;
       case "year": va = a.year_published || 0; vb = b.year_published || 0; break;
       case "added": va = a.date_added; vb = b.date_added; break;
       case "available":
-        va = a.is_available ? 0 : (a.estimated_wait_days || 999);
-        vb = b.is_available ? 0 : (b.estimated_wait_days || 999);
+        va = (ma && ma.is_available) ? 0 : ((ma && ma.estimated_wait_days) || 999);
+        vb = (mb && mb.is_available) ? 0 : ((mb && mb.estimated_wait_days) || 999);
         break;
       default: return 0;
     }}
@@ -520,6 +641,21 @@ function sortData(data) {{
     if (va > vb) return sortAsc ? 1 : -1;
     return 0;
   }});
+}}
+
+function applyViewUI() {{
+  const isEbook = currentView === "ebook";
+  document.getElementById("page-title").textContent =
+    `> browse // libby ${{isEbook ? "ebooks" : "audiobooks"}}`;
+  document.getElementById("btn-ebook").classList.toggle("active", isEbook);
+  document.getElementById("btn-audio").classList.toggle("active", !isEbook);
+  document.getElementById("pages-filter-group").style.display = isEbook ? "" : "none";
+  document.getElementById("kindle-filter-group").style.display = isEbook ? "" : "none";
+  document.getElementById("avail-count").textContent = isEbook ? EBOOK_AVAIL : AUDIO_AVAIL;
+  // reset sort to available when switching views
+  sortCol = "available";
+  sortAsc = false;
+  initGearPanel();
 }}
 
 function render() {{
@@ -530,12 +666,15 @@ function render() {{
   const kindleOnly = document.getElementById("kindle-only").checked;
   const activeShelves = getActiveShelves();
   const activeSubjects = getActiveSubjects();
+  const isEbook = currentView === "ebook";
 
   let filtered = DATA.filter(b => {{
+    const m = getMedia(b);
+    if (!m) return false;
     if (search && !b.title.toLowerCase().includes(search) && !b.author.toLowerCase().includes(search)) return false;
-    if (b.pages && (b.pages < minP || b.pages > maxP)) return false;
-    if (availOnly && !b.is_available) return false;
-    if (kindleOnly && b.has_kindle !== true) return false;
+    if (isEbook && m.pages && (m.pages < minP || m.pages > maxP)) return false;
+    if (availOnly && !m.is_available) return false;
+    if (isEbook && kindleOnly && m.has_kindle !== true) return false;
     if (activeShelves.length > 0 && !activeShelves.every(s => b.goodreads_shelves.includes(s))) return false;
     if (activeSubjects.length > 0 && !activeSubjects.some(s => b.subjects.includes(s))) return false;
     return true;
@@ -553,22 +692,26 @@ function render() {{
 
   const tbody = document.getElementById("book-table");
   tbody.innerHTML = filtered.map(b => {{
+    const m = getMedia(b);
     const shelves = b.goodreads_shelves.map(s => `<span class="badge">${{s}}</span>`).join("");
     let status;
-    if (b.is_available) {{
+    if (m.is_available) {{
       status = `<span class="avail">available</span>`;
-    }} else if (b.estimated_wait_days != null) {{
-      status = `<span class="wait">~${{b.estimated_wait_days}}d wait</span>`;
+    }} else if (m.estimated_wait_days != null) {{
+      status = `<span class="wait">~${{m.estimated_wait_days}}d wait</span>`;
     }} else {{
       status = `<span class="unavail">waitlist</span>`;
     }}
-    if (b.holds_count != null) {{
-      status += `<br><span style="color:#555;font-size:11px">${{b.holds_count}} holds / ${{b.owned_copies || "?"}} copies</span>`;
+    if (m.holds_count != null) {{
+      status += `<br><span style="color:#555;font-size:11px">${{m.holds_count}} holds / ${{m.owned_copies || "?"}} copies</span>`;
     }}
-    if (b.has_kindle === true) {{
+    if (isEbook && m.has_kindle === true) {{
       status += `<br><span class="kindle">kindle</span>`;
     }}
-    const pages = b.pages != null ? b.pages : `<span style="color:#333">-</span>`;
+    const pages = (m.pages != null) ? m.pages : `<span style="color:#333">-</span>`;
+    const dur = m.duration_seconds != null
+      ? fmtDuration(m.duration_seconds)
+      : `<span style="color:#333">-</span>`;
     const rating = b.average_rating != null
       ? `<span class="rating">${{b.average_rating.toFixed(2)}}</span>`
       : `<span style="color:#333">-</span>`;
@@ -580,6 +723,7 @@ function render() {{
       <td data-col="title">${{b.title}}</td>
       <td data-col="author">${{b.author}}</td>
       <td data-col="pages">${{pages}}</td>
+      <td data-col="duration">${{dur}}</td>
       <td data-col="rating">${{rating}}</td>
       <td data-col="shelves">${{shelves}}</td>
       <td data-col="subjects">${{subjects}}</td>
@@ -615,7 +759,22 @@ document.getElementById("subjects-toggle").addEventListener("click", () => {{
   arrow.textContent = el.classList.contains("collapsed") ? "+" : "\u2212";
 }});
 
-const COLUMNS = [
+document.getElementById("btn-ebook").addEventListener("click", () => {{
+  currentView = "ebook";
+  localStorage.setItem("browse-view", "ebook");
+  applyViewUI();
+  render();
+  applyColVisibility();
+}});
+document.getElementById("btn-audio").addEventListener("click", () => {{
+  currentView = "audiobook";
+  localStorage.setItem("browse-view", "audiobook");
+  applyViewUI();
+  render();
+  applyColVisibility();
+}});
+
+const EBOOK_COLUMNS = [
   {{ key: "title", label: "Title", defaultOn: true }},
   {{ key: "author", label: "Author", defaultOn: true }},
   {{ key: "pages", label: "Pages", defaultOn: true }},
@@ -628,35 +787,63 @@ const COLUMNS = [
   {{ key: "status", label: "Status", defaultOn: true }},
   {{ key: "link", label: "Link", defaultOn: true }},
 ];
-const STORAGE_KEY = "browse-col-visibility";
+const AUDIO_COLUMNS = [
+  {{ key: "title", label: "Title", defaultOn: true }},
+  {{ key: "author", label: "Author", defaultOn: true }},
+  {{ key: "duration", label: "Duration", defaultOn: true }},
+  {{ key: "rating", label: "Rating", defaultOn: true }},
+  {{ key: "shelves", label: "Shelves", defaultOn: true }},
+  {{ key: "subjects", label: "Subjects", defaultOn: false }},
+  {{ key: "year", label: "Year", defaultOn: true }},
+  {{ key: "added", label: "Added", defaultOn: true }},
+  {{ key: "notes", label: "Notes", defaultOn: false }},
+  {{ key: "status", label: "Status", defaultOn: true }},
+  {{ key: "link", label: "Link", defaultOn: true }},
+];
+
+// All possible columns for visibility tracking
+const ALL_COLS = ["title","author","pages","duration","rating","shelves","subjects","year","added","notes","status","link"];
+const STORAGE_KEY_EBOOK = "browse-col-visibility-ebook";
+const STORAGE_KEY_AUDIO = "browse-col-visibility-audio";
+
+function storageKey() {{
+  return currentView === "ebook" ? STORAGE_KEY_EBOOK : STORAGE_KEY_AUDIO;
+}}
+function currentColumns() {{
+  return currentView === "ebook" ? EBOOK_COLUMNS : AUDIO_COLUMNS;
+}}
 
 function loadColVisibility() {{
   try {{
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    const saved = JSON.parse(localStorage.getItem(storageKey()));
     if (saved && typeof saved === "object") return saved;
   }} catch (_) {{}}
-  return Object.fromEntries(COLUMNS.map(c => [c.key, c.defaultOn]));
+  return Object.fromEntries(currentColumns().map(c => [c.key, c.defaultOn]));
 }}
 
 let colVisibility = loadColVisibility();
 
 function saveColVisibility() {{
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(colVisibility));
+  localStorage.setItem(storageKey(), JSON.stringify(colVisibility));
 }}
 
 function applyColVisibility() {{
-  for (const col of COLUMNS) {{
-    const hidden = !colVisibility[col.key];
-    document.querySelectorAll(`[data-col="${{col.key}}"]`).forEach(el => {{
-      el.classList.toggle("col-hidden", hidden);
+  // Hide all optional cols first, then show only the active view's visible ones
+  const activeKeys = new Set(currentColumns().map(c => c.key));
+  for (const key of ALL_COLS) {{
+    const visible = activeKeys.has(key) && colVisibility[key] !== false;
+    document.querySelectorAll(`[data-col="${{key}}"]`).forEach(el => {{
+      el.classList.toggle("col-hidden", !visible);
     }});
   }}
 }}
 
 function initGearPanel() {{
+  const cols = currentColumns();
+  colVisibility = loadColVisibility();
   const panel = document.getElementById("gear-panel");
-  panel.innerHTML = COLUMNS.map(c => {{
-    const checked = colVisibility[c.key] ? "checked" : "";
+  panel.innerHTML = cols.map(c => {{
+    const checked = colVisibility[c.key] !== false ? "checked" : "";
     return `<label><input type="checkbox" data-col-toggle="${{c.key}}" ${{checked}}> ${{c.label}}</label>`;
   }}).join("");
 
@@ -667,15 +854,16 @@ function initGearPanel() {{
       applyColVisibility();
     }});
   }});
-
-  document.getElementById("gear-btn").addEventListener("click", (e) => {{
-    e.stopPropagation();
-    panel.classList.toggle("open");
-  }});
-  document.addEventListener("click", () => panel.classList.remove("open"));
-  panel.addEventListener("click", (e) => e.stopPropagation());
 }}
 
+document.getElementById("gear-btn").addEventListener("click", (e) => {{
+  e.stopPropagation();
+  document.getElementById("gear-panel").classList.toggle("open");
+}});
+document.addEventListener("click", () => document.getElementById("gear-panel").classList.remove("open"));
+document.getElementById("gear-panel").addEventListener("click", (e) => e.stopPropagation());
+
+applyViewUI();
 initGearPanel();
 initShelves();
 initSubjects();
@@ -685,8 +873,9 @@ applyColVisibility();
 </body>
 </html>
 "##,
-        total = results.len(),
-        available = available_count,
+        total = total,
+        ebook_avail = ebook_avail,
+        audio_avail = audio_avail,
         json_data = json_data,
     )
 }

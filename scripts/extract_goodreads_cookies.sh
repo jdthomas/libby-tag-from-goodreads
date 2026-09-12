@@ -3,15 +3,20 @@ set -euo pipefail
 
 OUTPUT="goodreads_config.json"
 USER_ID=""
+PROFILE=""
 
 usage() {
-    echo "Usage: $0 [--output FILE] [--user-id ID]"
+    echo "Usage: $0 [--output FILE] [--user-id ID] [--profile NAME]"
     echo ""
     echo "Extract Goodreads cookies from Firefox and write a config file."
     echo ""
     echo "Options:"
     echo "  --output FILE   Output config file path (default: goodreads_config.json)"
     echo "  --user-id ID    Your Goodreads user ID (found in the URL on goodreads.com/review/import)"
+    echo "  --profile NAME  Firefox profile directory name to read cookies from"
+    echo "                  (e.g. 'Angie'; matches any dir under the Firefox Profiles"
+    echo "                  folder containing this string). Skips the picker when"
+    echo "                  multiple cookies.sqlite files exist."
     echo "  --help          Show this help"
     exit 0
 }
@@ -24,6 +29,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --user-id)
             USER_ID="$2"
+            shift 2
+            ;;
+        --profile)
+            PROFILE="$2"
             shift 2
             ;;
         --help)
@@ -45,11 +54,17 @@ fi
 
 COOKIE_DBS=()
 while IFS= read -r line; do
-    COOKIE_DBS+=("$line")
+    if [[ -z "$PROFILE" || "$line" == *"$PROFILE"* ]]; then
+        COOKIE_DBS+=("$line")
+    fi
 done < <(find "$FIREFOX_DIR" -name "cookies.sqlite" -type f 2>/dev/null)
 
 if [[ ${#COOKIE_DBS[@]} -eq 0 ]]; then
-    echo "Error: No cookies.sqlite found under $FIREFOX_DIR" >&2
+    if [[ -n "$PROFILE" ]]; then
+        echo "Error: No cookies.sqlite found matching profile '$PROFILE' under $FIREFOX_DIR" >&2
+    else
+        echo "Error: No cookies.sqlite found under $FIREFOX_DIR" >&2
+    fi
     exit 1
 elif [[ ${#COOKIE_DBS[@]} -eq 1 ]]; then
     COOKIES_DB="${COOKIE_DBS[0]}"

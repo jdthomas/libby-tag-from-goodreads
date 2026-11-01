@@ -187,6 +187,8 @@ impl GoodreadsExporter {
         }
 
         let bytes = resp.bytes().await.context("reading CSV response body")?;
+        crate::goodreads::validate_export(&bytes)
+            .context("downloaded file is not a valid Goodreads export")?;
         tokio::fs::write(output, &bytes)
             .await
             .with_context(|| format!("writing CSV to {}", output.display()))?;

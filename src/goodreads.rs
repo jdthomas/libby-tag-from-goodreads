@@ -106,6 +106,19 @@ struct GoodReadsExportRecord {
     owned_copies: i64,
 }
 
+/// Strictly parses every row; unlike the readers below, which skip bad rows,
+/// this fails so a non-CSV response (e.g. a login page) is never accepted as an export.
+pub fn validate_export(bytes: &[u8]) -> Result<usize> {
+    csv::Reader::from_reader(bytes)
+        .deserialize::<GoodReadsExportRecord>()
+        .enumerate()
+        .try_fold(0, |_, (i, r)| {
+            r.map(|_| i + 1).map_err(|e| {
+                anyhow::anyhow!("row {} is not a valid Goodreads export row: {e}", i + 1)
+            })
+        })
+}
+
 pub async fn get_book_titles_from_goodreads_shelf(
     file_path: PathBuf,
     shelf_name: &str,
@@ -137,4 +150,20 @@ pub async fn get_book_titles_from_goodreads(
             record.into()
         })
         .into_group_map_by(|record: &BookInfo| record.shelf.clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_export;
+
+    #[test]
+    fn rejects_html() {
+        assert!(validate_export(b"<html>\n<body>Sign in</body>\n</html>\n").is_err());
+    }
+
+    #[test]
+    fn accepts_real_export() {
+        let bytes = std::fs::read("goodreads_library_export.csv").unwrap();
+        assert!(validate_export(&bytes).unwrap() > 0);
+    }
 }
